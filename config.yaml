@@ -1,0 +1,13 @@
+app:
+  name: SupplyChainMCP
+  env: development
+  data_dir: "./"
+  forecasts_dir: "Forecasts"
+  acknowledgements_dir: "Acknowledgements"
+  cache_dir: "cache"
+  reports_dir: "reports"
+  logs_dir: "logs"
+  max_workers: 4
+logging:
+  level: INFO
+  file: "logs/supplychainmcp.log"

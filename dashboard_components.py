@@ -1,0 +1,247 @@
+from __future__ import annotations
+import base64
+from io import BytesIO
+from typing import Optional
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+    ST_AGGRID_AVAILABLE = True
+except ImportError:
+    ST_AGGRID_AVAILABLE = False
+
+try:
+    from streamlit_option_menu import option_menu
+    HAS_OPTION_MENU = True
+except ImportError:
+    HAS_OPTION_MENU = False
+
+
+def load_app_style(theme: str = "dark") -> None:
+    is_light = theme.lower() == "light"
+    page_bg = "#f7f9fc" if is_light else "#09112b"
+    text_color = "#1f2937" if is_light else "#e6edf7"
+    card_bg = "rgba(255, 255, 255, 0.92)" if is_light else "rgba(255, 255, 255, 0.05)"
+    border_color = "rgba(15, 23, 42, 0.12)" if is_light else "rgba(255, 255, 255, 0.1)"
+    secondary_text = "#4b5563" if is_light else "#a6b8d9"
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background: {page_bg};
+            color: {text_color};
+        }}
+        .kpi-card {{
+            background: {card_bg};
+            border: 1px solid {border_color};
+            border-radius: 18px;
+            padding: 18px 20px;
+            margin-bottom: 16px;
+            min-height: 130px;
+        }}
+        .kpi-card-title {{
+            color: {secondary_text};
+            font-size: 0.92rem;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }}
+        .kpi-card-value {{
+            font-size: 1.9rem;
+            font-weight: 700;
+            color: {text_color};
+            margin-bottom: 6px;
+        }}
+        .kpi-card-delta {{
+            color: #0d9488;
+            font-size: 0.95rem;
+        }}
+        .kpi-card-footer {{
+            margin-top: 12px;
+            color: {secondary_text};
+            font-size: 0.85rem;
+        }}
+        .section-header {{
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: {text_color};
+            margin-top: 24px;
+            margin-bottom: 12px;
+        }}
+        .section-subheader {{
+            color: {secondary_text};
+        }}
+        .small-button {{
+            border-radius: 10px;
+            background-color: #0a84ff;
+            color: white;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar_menu(page: str, menu_items: list[str]) -> str:
+    if HAS_OPTION_MENU:
+        default_icons = [
+            "speedometer2",
+            "bar-chart-line",
+            "receipt-cutoff",
+            "scissors",
+            "graph-up",
+            "person-badge",
+            "box-seam",
+            "forecast",
+            "clipboard-data",
+            "shield-exclamation",
+            "robot",
+            "gear",
+        ]
+        icons = default_icons[: len(menu_items)]
+        if len(icons) < len(menu_items):
+            icons += ["dot"] * (len(menu_items) - len(icons))
+        selected = option_menu(
+            menu_title=None,
+            options=menu_items,
+            icons=icons,
+            menu_icon="cast",
+            default_index=menu_items.index(page) if page in menu_items else 0,
+            styles={
+                "container": {"padding": "0!important", "background-color": "#091127"},
+                "icon": {"color": "#8eb8ff", "font-size": "18px"},
+                "nav-link": {
+                    "font-size": "0.95rem",
+                    "text-align": "left",
+                    "margin":"0px 0px 4px 0px",
+                    "color": "#c6d6f5",
+                    "padding": "8px 12px",
+                    "border-radius": "10px",
+                },
+                "nav-link-selected": {"background-color": "#0d4b9f", "color": "white"},
+            },
+        )
+        return selected
+    return st.sidebar.radio("Navigation", menu_items, index=menu_items.index(page) if page in menu_items else 0)
+
+
+def render_kpi_cards(metrics: list[dict], columns: int = 4) -> Optional[str]:
+    cols = st.columns(columns)
+    target_page: Optional[str] = None
+    for idx, metric in enumerate(metrics):
+        with cols[idx % columns]:
+            st.markdown(
+                f"""
+                <div class='kpi-card'>
+                    <div class='kpi-card-title'>{metric['label']}</div>
+                    <div class='kpi-card-value'>{metric['value']}</div>
+                    <div class='kpi-card-delta'>{metric.get('delta', '')}</div>
+                    <div class='kpi-card-footer'>{metric.get('detail', '')}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if metric.get("action"):
+                if st.button(metric["action"], key=f"kpi_{idx}"):
+                    target_page = metric.get("target")
+    return target_page
+
+
+def render_aggrid_table(df: pd.DataFrame, height: int = 400, fit_columns: bool = True) -> None:
+    # All product-level tables should identify the item as well as its SKU.
+    # Different sources retain different raw description field names, so use a
+    # canonical display column and place it directly beside the SKU.
+    if "vendor_sku" in df.columns:
+        df = df.copy()
+        if "product_description" not in df.columns:
+            for candidate in ("description", "ulta item description"):
+                if candidate in df.columns:
+                    df["product_description"] = df[candidate]
+                    break
+        if "product_description" in df.columns:
+            columns = list(df.columns)
+            columns.remove("product_description")
+            vendor_sku_index = columns.index("vendor_sku") + 1
+            columns.insert(vendor_sku_index, "product_description")
+            df = df[columns].rename(columns={"product_description": "Product Description"})
+
+    if ST_AGGRID_AVAILABLE:
+        options = GridOptionsBuilder.from_dataframe(df)
+        options.configure_default_column(editable=False, groupable=True, filter=True, resizable=True)
+        options.configure_selection(selection_mode="single", use_checkbox=False)
+        options.configure_grid_options(domLayout="normal")
+        if fit_columns:
+            options.configure_column("", flex=1)
+        AgGrid(
+            df,
+            height=height,
+            gridOptions=options.build(),
+            update_mode=GridUpdateMode.NO_UPDATE,
+            allow_unsafe_jscode=True,
+        )
+    else:
+        st.warning("Install `st-aggrid` for a rich table experience. Falling back to Streamlit data frame.")
+        st.dataframe(df)
+
+
+def download_dataframe(df: pd.DataFrame, label: str = "Download CSV") -> None:
+    csv_buffer = df.to_csv(index=False).encode("utf-8")
+    st.download_button(label, csv_buffer, file_name=f"{label.replace(' ', '_').lower()}.csv", mime="text/csv")
+
+
+def plot_line_chart(df: pd.DataFrame, x: str, y: str, color: Optional[str] = None, title: Optional[str] = None) -> None:
+    if df.empty:
+        st.info("No data available for this chart.")
+        return
+    fig = px.line(df, x=x, y=y, color=color, title=title, template="plotly_dark")
+    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_bar_chart(df: pd.DataFrame, x: str, y: str, color: Optional[str] = None, title: Optional[str] = None) -> None:
+    if df.empty:
+        st.info("No data available for this chart.")
+        return
+    fig = px.bar(df, x=x, y=y, color=color, title=title, template="plotly_dark")
+    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_gauge(value: float, title: str, subtitle: Optional[str] = None) -> None:
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number+delta",
+            value=value * 100 if value <= 1 else value,
+            number={"suffix": "%" if value <= 1 else ""},
+            delta={"reference": 100 if value <= 1 else 0, "relative": False},
+            gauge={
+                "axis": {"range": [0, 100] if value <= 1 else [0, value * 1.5]},
+                "bar": {"color": "#0dbd8b"},
+                "steps": [
+                    {"range": [0, 50], "color": "#962d3e"},
+                    {"range": [50, 80], "color": "#f4b400"},
+                    {"range": [80, 100], "color": "#0dbd8b"},
+                ],
+            },
+            title={"text": title if not subtitle else f"{title}<br><span style='font-size:0.75em;color:#c0c9d9'>{subtitle}</span>"},
+        )
+    )
+    fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_markdown_card(title: str, subtitle: str, value: str) -> None:
+    st.markdown(
+        f"""
+        <div class='kpi-card'>
+            <div class='kpi-card-title'>{title}</div>
+            <div class='kpi-card-value'>{value}</div>
+            <div class='kpi-card-footer'>{subtitle}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
