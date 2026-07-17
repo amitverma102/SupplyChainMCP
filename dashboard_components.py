@@ -184,7 +184,7 @@ def render_aggrid_table(df: pd.DataFrame, height: int = 400, fit_columns: bool =
             allow_unsafe_jscode=True,
         )
     else:
-        st.warning("Install `st-aggrid` for a rich table experience. Falling back to Streamlit data frame.")
+        st.warning("Install `streamlit-aggrid` for a rich table experience. Falling back to Streamlit data frame.")
         st.dataframe(df)
 
 
