@@ -1,31 +1,31 @@
-[tool.poetry]
+[project]
 name = "supplychainmcp"
 version = "0.1.0"
-description = "Supply Chain Intelligence MCP Server"
-authors = ["SupplyChain Team <dev@example.com>"]
-
-[tool.poetry.dependencies]
-python = ">=3.12"
-
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+description = "Supply Chain Intelligence Streamlit application and MCP server"
+requires-python = ">=3.12"
+authors = [{ name = "SupplyChain Team", email = "dev@example.com" }]
 dependencies = [
-"fastmcp>=0.1.0",
-"pandas>=2.0",
-"polars>=0.18",
-"duckdb>=0.8",
-"pydantic>=2.0",
-"openpyxl>=3.0",
-"pyarrow>=12.0",
-"rapidfuzz>=2.0",
-"numpy>=1.24",
-"scipy>=1.10",
-"statsmodels>=0.14",
-"scikit-learn>=1.2",
-"plotly>=5.0",
-"rich>=13",
-"pytest>=7.0",
-"python-dateutil>=2.8",
-"mcp[cli]"
+    "streamlit",
+    "streamlit-option-menu==0.4.0",
+    "st-aggrid>=0.4.4",
+    "fastmcp>=0.1.0",
+    "mcp[cli]",
+    "pandas>=2.0",
+    "polars>=0.18",
+    "duckdb>=0.8",
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+    "openpyxl>=3.0",
+    "pyarrow>=12.0",
+    "rapidfuzz>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.2",
+    "plotly>=5.0",
+    "rich>=13",
+    "python-dateutil>=2.8",
 ]
+
+[tool.uv]
+package = false

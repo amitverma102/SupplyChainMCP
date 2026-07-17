@@ -443,7 +443,9 @@ def summarize_root_cause(report: dict[str, Any]) -> str:
 def page_settings(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChainMCPClient) -> None:
     st.markdown("# Settings")
     st.markdown("Manage the dashboard, refresh data, and review configuration.")
-    st.write(client.cfg.json(indent=2))
+    # Pydantic v2 removed keyword arguments from ``.json()``; serialize with
+    # ``model_dump_json()`` so the configuration remains nicely formatted.
+    st.code(client.cfg.model_dump_json(indent=2), language="json")
     if st.button("Refresh data cache"):
         client.refresh_data()
         # `load_data` is cached separately from the client.  Clear it so the
