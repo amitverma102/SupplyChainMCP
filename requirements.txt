@@ -1,8 +1,7 @@
 # Streamlit Community Cloud installs this file for streamlit_app.py.
 streamlit
 streamlit-option-menu==0.4.0
-st-aggrid>=0.4.4
-
+st-aggrid
 fastmcp>=0.1.0
 mcp[cli]
 pandas>=2.0
