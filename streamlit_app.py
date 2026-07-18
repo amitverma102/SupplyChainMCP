@@ -159,7 +159,7 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
     selected = render_kpi_cards(cards, columns=4)
     if selected:
         st.session_state.page = selected
-        st.experimental_rerun()
+        st.rerun()
 
     st.markdown("---")
     row1, row2 = st.columns([1.5, 1.5])

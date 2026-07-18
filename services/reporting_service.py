@@ -31,33 +31,27 @@ class ReportingService:
             f_df = self.forecasts.to_pandas() if not self.forecasts.is_empty() else pd.DataFrame()
             a_df = self.acks
 
-            months = []
-            forecast_qty = []
-            actual_qty = []
-
+            forecast_qty = pd.Series(dtype=float, name="forecast_qty")
+            actual_qty = pd.Series(dtype=float, name="actual_qty")
             if not f_df.empty and "forecast_month_parsed" in f_df.columns:
-                f_agg = f_df.groupby(pd.to_datetime(f_df["forecast_month_parsed"], errors="coerce").dt.to_period("M"))["forecast_qty"].sum()
-                for period, qty in f_agg.items():
-                    months.append(str(period))
-                    forecast_qty.append(float(qty))
-
+                forecast_qty = (
+                    f_df.groupby(pd.to_datetime(f_df["forecast_month_parsed"], errors="coerce").dt.to_period("M"))["forecast_qty"]
+                    .sum()
+                    .sort_index()
+                    .rename("forecast_qty")
+                )
             if not a_df.empty and "delivery_date" in a_df.columns:
-                a_agg = a_df.groupby(pd.to_datetime(a_df["delivery_date"], errors="coerce").dt.to_period("M"))["confirmed_qty"].sum()
-                for period, qty in a_agg.items():
-                    if str(period) not in months:
-                        months.append(str(period))
-                        forecast_qty.append(0.0)
-                    else:
-                        idx = months.index(str(period))
-                        if len(actual_qty) <= idx:
-                            actual_qty.extend([0.0] * (idx - len(actual_qty) + 1))
-                    if len(actual_qty) <= months.index(str(period)):
-                        actual_qty.extend([0.0] * (months.index(str(period)) - len(actual_qty) + 1))
-                    actual_qty[months.index(str(period))] = float(qty)
+                actual_qty = (
+                    a_df.groupby(pd.to_datetime(a_df["delivery_date"], errors="coerce").dt.to_period("M"))["confirmed_qty"]
+                    .sum()
+                    .sort_index()
+                    .rename("actual_qty")
+                )
+            monthly = pd.concat([forecast_qty, actual_qty], axis=1).fillna(0).sort_index()
 
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=months, y=forecast_qty, mode="lines+markers", name="Forecast", line=dict(color="blue", width=2)))
-            fig.add_trace(go.Scatter(x=months, y=actual_qty, mode="lines+markers", name="Actual", line=dict(color="green", width=2)))
+            fig.add_trace(go.Scatter(x=monthly.index.to_timestamp(), y=monthly["forecast_qty"], mode="lines+markers", name="Forecast", line=dict(color="blue", width=2)))
+            fig.add_trace(go.Scatter(x=monthly.index.to_timestamp(), y=monthly["actual_qty"], mode="lines+markers", name="Actual", line=dict(color="green", width=2)))
 
             fig.update_layout(
                 title="Forecast vs Actual Confirmed Quantity",
@@ -126,11 +120,11 @@ class ReportingService:
             if "delivery_date" not in a_df.columns or "ordered_qty" not in a_df.columns:
                 return self._empty_figure("Missing required columns (delivery_date, ordered_qty)")
 
-            a_df["delivery_month"] = pd.to_datetime(a_df["delivery_date"], errors="coerce").dt.to_period("M").astype(str)
-            demand_by_month = a_df.groupby("delivery_month")["ordered_qty"].sum()
+            a_df["delivery_month"] = pd.to_datetime(a_df["delivery_date"], errors="coerce").dt.to_period("M")
+            demand_by_month = a_df.groupby("delivery_month")["ordered_qty"].sum().sort_index()
 
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=demand_by_month.index, y=demand_by_month.values, mode="lines+markers", fill="tozeroy", name="Total Demand"))
+            fig.add_trace(go.Scatter(x=demand_by_month.index.to_timestamp(), y=demand_by_month.values, mode="lines+markers", fill="tozeroy", name="Total Demand"))
 
             fig.update_layout(
                 title="Monthly Demand Trend",
@@ -298,7 +292,7 @@ class ReportingService:
                 if "forecast_month_parsed" in f_df.columns:
                     f_agg = f_df.groupby(pd.to_datetime(f_df["forecast_month_parsed"], errors="coerce").dt.to_period("M"))["forecast_qty"].sum()
                     fig.add_trace(
-                        go.Scatter(x=[str(p) for p in f_agg.index], y=f_agg.values, mode="lines", name="Forecast"),
+                    go.Scatter(x=f_agg.sort_index().index.to_timestamp(), y=f_agg.sort_index().values, mode="lines", name="Forecast"),
                         row=1,
                         col=1,
                     )
@@ -306,7 +300,7 @@ class ReportingService:
             if not self.acks.empty and "delivery_date" in self.acks.columns:
                 a_agg = self.acks.groupby(pd.to_datetime(self.acks["delivery_date"], errors="coerce").dt.to_period("M"))["confirmed_qty"].sum()
                 fig.add_trace(
-                    go.Scatter(x=[str(p) for p in a_agg.index], y=a_agg.values, mode="lines", name="Actual"),
+                    go.Scatter(x=a_agg.sort_index().index.to_timestamp(), y=a_agg.sort_index().values, mode="lines", name="Actual"),
                     row=1,
                     col=1,
                 )
@@ -334,10 +328,10 @@ class ReportingService:
             # Demand trend
             if not self.acks.empty and "delivery_date" in self.acks.columns and "ordered_qty" in self.acks.columns:
                 a_df = self.acks.copy()
-                a_df["month"] = pd.to_datetime(a_df["delivery_date"], errors="coerce").dt.to_period("M").astype(str)
-                demand_by_month = a_df.groupby("month")["ordered_qty"].sum()
+                a_df["month"] = pd.to_datetime(a_df["delivery_date"], errors="coerce").dt.to_period("M")
+                demand_by_month = a_df.groupby("month")["ordered_qty"].sum().sort_index()
                 fig.add_trace(
-                    go.Scatter(x=demand_by_month.index, y=demand_by_month.values, mode="lines+markers", name="Demand", showlegend=False, fill="tozeroy"),
+                    go.Scatter(x=demand_by_month.index.to_timestamp(), y=demand_by_month.values, mode="lines+markers", name="Demand", showlegend=False, fill="tozeroy"),
                     row=2,
                     col=1,
                 )

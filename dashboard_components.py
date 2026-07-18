@@ -151,12 +151,50 @@ def render_kpi_cards(metrics: list[dict], columns: int = 4) -> Optional[str]:
     return target_page
 
 
+def prepare_calendar_data(df: pd.DataFrame, x: Optional[str] = None) -> pd.DataFrame:
+    """Normalize calendar columns and chronologically order a chart's x-axis.
+
+    Plotly treats string values such as ``April 2026`` as categories, which can
+    result in alphabetical ordering.  Converting calendar-like columns to real
+    dates (or numbers for years) gives both charts and AgGrid calendar sorting.
+    """
+    if df.empty:
+        return df
+
+    result = df.copy()
+    candidates = [x] if x in result.columns else list(result.columns)
+    sort_column: Optional[str] = None
+    for column in candidates:
+        name = str(column).lower().replace("_", " ")
+        if not any(token in name for token in ("date", "month", "year", "period")):
+            continue
+
+        source = result[column]
+        non_null_count = source.notna().sum()
+        if non_null_count == 0:
+            continue
+        parsed = (
+            pd.to_numeric(source, errors="coerce")
+            if "year" in name and not any(token in name for token in ("date", "month", "period"))
+            else pd.to_datetime(source, errors="coerce", format="mixed")
+        )
+        if parsed.notna().sum() < non_null_count * 0.8:
+            continue
+        result[column] = parsed
+        if column == x:
+            sort_column = column
+
+    if sort_column:
+        result = result.sort_values(sort_column, kind="stable")
+    return result
+
+
 def render_aggrid_table(df: pd.DataFrame, height: int = 400, fit_columns: bool = True) -> None:
     # All product-level tables should identify the item as well as its SKU.
     # Different sources retain different raw description field names, so use a
     # canonical display column and place it directly beside the SKU.
+    df = prepare_calendar_data(df)
     if "vendor_sku" in df.columns:
-        df = df.copy()
         if "product_description" not in df.columns:
             for candidate in ("description", "ulta item description"):
                 if candidate in df.columns:
@@ -197,18 +235,18 @@ def plot_line_chart(df: pd.DataFrame, x: str, y: str, color: Optional[str] = Non
     if df.empty:
         st.info("No data available for this chart.")
         return
-    fig = px.line(df, x=x, y=y, color=color, title=title, template="plotly_dark")
+    fig = px.line(prepare_calendar_data(df, x=x), x=x, y=y, color=color, title=title, template="plotly_dark")
     fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def plot_bar_chart(df: pd.DataFrame, x: str, y: str, color: Optional[str] = None, title: Optional[str] = None) -> None:
     if df.empty:
         st.info("No data available for this chart.")
         return
-    fig = px.bar(df, x=x, y=y, color=color, title=title, template="plotly_dark")
+    fig = px.bar(prepare_calendar_data(df, x=x), x=x, y=y, color=color, title=title, template="plotly_dark")
     fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def plot_gauge(value: float, title: str, subtitle: Optional[str] = None) -> None:
