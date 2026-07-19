@@ -143,7 +143,7 @@ def compute_kpis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChai
         "Fill Rate": {"value": f"{metrics['fill_rate'] * 100:.1f}%", "delta": "", "detail": "Confirmed / ordered"},
         "Forecast Accuracy": {"value": f"{metrics.get('forecast_accuracy', 0.0) * 100:.1f}%", "delta": "", "detail": "MAPE"},
         "WMAPE": {"value": f"{metrics.get('wmape', 0.0) * 100:.1f}%", "delta": "", "detail": "Weighted MAPE"},
-        "Products Short": {"value": f"{int(metrics['products_short']):,}", "delta": "", "detail": "Products with short supply"},
+        "Products Short": {"value": f"{int(metrics['products_short']):,}", "delta": "", "detail": "Unique SKUs with short supply"},
         "High Risk Vendors": {"value": f"{int(metrics.get('high_risk_vendors', 0)):,}", "delta": "", "detail": "Low fill-rate vendors"},
     }
 

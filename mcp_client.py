@@ -24,6 +24,26 @@ def resolve_dir(p: str | Path, base: Path = BASE_DIR.parent) -> Path:
     return directory
 
 
+def count_unique_short_skus(acks: pd.DataFrame) -> int:
+    """Count SKUs whose total confirmed quantity is short across all POs."""
+    required_columns = {"vendor_sku", "ordered_qty", "confirmed_qty"}
+    if acks.empty or not required_columns.issubset(acks.columns):
+        return 0
+
+    sku = acks["vendor_sku"].astype("string").str.strip()
+    valid_sku = sku.notna() & sku.ne("")
+    if not valid_sku.any():
+        return 0
+
+    totals = (
+        acks.loc[valid_sku, ["ordered_qty", "confirmed_qty"]]
+        .assign(vendor_sku=sku.loc[valid_sku])
+        .groupby("vendor_sku", dropna=True)[["ordered_qty", "confirmed_qty"]]
+        .sum()
+    )
+    return int((totals["ordered_qty"] > totals["confirmed_qty"]).sum())
+
+
 class SupplyChainMCPClient:
     """Client wrapper for SupplyChainMCP service classes and analytics integration."""
 
@@ -215,7 +235,7 @@ class SupplyChainMCPClient:
         if metrics["ordered_quantity"] > 0:
             metrics["fill_rate"] = metrics["confirmed_quantity"] / metrics["ordered_quantity"]
         if not acks.empty and "vendor_sku" in acks.columns:
-            metrics["products_short"] = int((acks["ordered_qty"] > acks["confirmed_qty"]).sum())
+            metrics["products_short"] = count_unique_short_skus(acks)
             metrics["products_over_supplied"] = int((acks["confirmed_qty"] > acks["ordered_qty"]).sum())
         if not acks.empty and "vendor" in acks.columns:
             vendor_fill = acks.groupby("vendor").apply(lambda df: df["confirmed_qty"].sum() / df["ordered_qty"].sum() if df["ordered_qty"].sum() > 0 else 0.0)

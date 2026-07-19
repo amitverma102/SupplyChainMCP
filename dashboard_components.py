@@ -87,48 +87,124 @@ def load_app_style(theme: str = "dark") -> None:
 
 
 def render_sidebar_menu(page: str, menu_items: list[str]) -> str:
-    if HAS_OPTION_MENU:
-        default_icons = [
-            "speedometer2",
-            "bar-chart-line",
-            "receipt-cutoff",
-            "scissors",
-            "graph-up",
-            "person-badge",
-            "box-seam",
-            "forecast",
-            "clipboard-data",
-            "shield-exclamation",
-            "robot",
-            "gear",
-        ]
-        icons = default_icons[: len(menu_items)]
-        if len(icons) < len(menu_items):
-            icons += ["dot"] * (len(menu_items) - len(icons))
-        selected = option_menu(
-            menu_title=None,
-            options=menu_items,
-            icons=icons,
-            menu_icon="cast",
-            default_index=menu_items.index(page) if page in menu_items else 0,
-            styles={
-                "container": {"padding": "0!important", "background-color": "#091127"},
-                "icon": {"color": "#8eb8ff", "font-size": "18px"},
-                "nav-link": {
-                    "font-size": "0.95rem",
-                    "text-align": "left",
-                    "margin":"0px 0px 4px 0px",
-                    "color": "#c6d6f5",
-                    "padding": "8px 12px",
-                    "border-radius": "10px",
+
+    with st.sidebar:
+
+        if HAS_OPTION_MENU:
+
+            default_icons = [
+
+                "speedometer2",
+
+                "bar-chart-line",
+
+                "receipt-cutoff",
+
+                "scissors",
+
+                "graph-up",
+
+                "person-badge",
+
+                "box-seam",
+
+                "forecast",
+
+                "clipboard-data",
+
+                "shield-exclamation",
+
+                "robot",
+
+                "gear",
+
+            ]
+
+            icons = default_icons[:len(menu_items)]
+
+            if len(icons) < len(menu_items):
+
+                icons += ["dot"] * (len(menu_items) - len(icons))
+
+            return option_menu(
+
+                menu_title=None,
+
+                options=menu_items,
+
+                icons=icons,
+
+                menu_icon="cast",
+
+                default_index=(
+
+                    menu_items.index(page)
+
+                    if page in menu_items else 0
+
+                ),
+
+                styles={
+
+                    "container": {
+
+                        "padding": "0!important",
+
+                        "background-color": "#091127",
+
+                    },
+
+                    "icon": {
+
+                        "color": "#8eb8ff",
+
+                        "font-size": "18px",
+
+                    },
+
+                    "nav-link": {
+
+                        "font-size": "0.95rem",
+
+                        "text-align": "left",
+
+                        "margin": "0px 0px 4px 0px",
+
+                        "color": "#c6d6f5",
+
+                        "padding": "8px 12px",
+
+                        "border-radius": "10px",
+
+                    },
+
+                    "nav-link-selected": {
+
+                        "background-color": "#0d4b9f",
+
+                        "color": "white",
+
+                    },
+
                 },
-                "nav-link-selected": {"background-color": "#0d4b9f", "color": "white"},
-            },
+
+            )
+
+        return st.radio(
+
+            "Navigation",
+
+            menu_items,
+
+            index=(
+
+                menu_items.index(page)
+
+                if page in menu_items else 0
+
+            ),
+
         )
-        return selected
-    return st.sidebar.radio("Navigation", menu_items, index=menu_items.index(page) if page in menu_items else 0)
-
-
 def render_kpi_cards(metrics: list[dict], columns: int = 4) -> Optional[str]:
     cols = st.columns(columns)
     target_page: Optional[str] = None
