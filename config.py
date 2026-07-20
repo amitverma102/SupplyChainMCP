@@ -11,6 +11,7 @@ class AppConfig(BaseModel):
     data_dir: str
     forecasts_dir: str
     acknowledgements_dir: str
+    inventory_dir: str
     cache_dir: str
     reports_dir: str
     logs_dir: str

@@ -4,6 +4,7 @@ app:
   data_dir: "./"
   forecasts_dir: "Forecasts"
   acknowledgements_dir: "Acknowledgements"
+  inventory_dir: "Inventory"
   cache_dir: "cache"
   reports_dir: "reports"
   logs_dir: "logs"

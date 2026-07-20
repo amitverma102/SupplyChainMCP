@@ -6,6 +6,7 @@ from .analytics_service import AnalyticsService
 from .root_cause_service import RootCauseService
 from .cache_service import CacheService
 from .reporting_service import ReportingService
+from .inventory_service import InventoryService
 
 __all__ = [
     "ForecastService",
@@ -15,4 +16,5 @@ __all__ = [
     "RootCauseService",
     "CacheService",
     "ReportingService",
+    "InventoryService",
 ]

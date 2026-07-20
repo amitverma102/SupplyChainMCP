@@ -10,6 +10,7 @@ from services.acknowledgement_service import AcknowledgementService
 from services.analytics_service import AnalyticsService
 from services.cache_service import CacheService
 from services.forecast_service import ForecastService
+from services.inventory_service import InventoryService
 from services.root_cause_service import RootCauseService
 
 
@@ -55,16 +56,19 @@ class SupplyChainMCPClient:
 
         self.forecasts_dir = resolve_dir(self.cfg.app.forecasts_dir, self.base_dir)
         self.acknowledgements_dir = resolve_dir(self.cfg.app.acknowledgements_dir, self.base_dir)
+        self.inventory_dir = resolve_dir(self.cfg.app.inventory_dir, self.base_dir)
         self.cache_dir = resolve_dir(self.cfg.app.cache_dir, self.base_dir)
         self.reports_dir = resolve_dir(self.cfg.app.reports_dir, self.base_dir)
 
         self.cache = CacheService(self.cache_dir / "metadata.db")
         self.forecast_service = ForecastService(self.forecasts_dir, cache_service=self.cache)
         self.ack_service = AcknowledgementService(self.acknowledgements_dir, cache_service=self.cache)
+        self.inventory_service = InventoryService(self.inventory_dir)
         self.analytics = AnalyticsService()
 
         self._forecasts: Optional[pl.DataFrame] = None
         self._acks: Optional[pd.DataFrame] = None
+        self._inventory: Optional[pd.DataFrame] = None
 
     def load_forecasts(self, force: bool = False) -> pl.DataFrame:
         if self._forecasts is None or force:
@@ -78,6 +82,11 @@ class SupplyChainMCPClient:
             self._register_data()
         return self._acks
 
+    def load_inventory(self, force: bool = False) -> pd.DataFrame:
+        if self._inventory is None or force:
+            self._inventory = self.inventory_service.load_latest()
+        return self._inventory
+
     def _register_data(self) -> None:
         self.analytics = AnalyticsService()
         if self._forecasts is not None and len(self._forecasts) > 0:
@@ -88,6 +97,7 @@ class SupplyChainMCPClient:
     def refresh_data(self) -> tuple[pl.DataFrame, pd.DataFrame]:
         self._forecasts = None
         self._acks = None
+        self._inventory = None
         return self.load_forecasts(force=True), self.load_acknowledgements(force=True)
 
     @property
@@ -100,6 +110,10 @@ class SupplyChainMCPClient:
     @property
     def ack_df(self) -> pd.DataFrame:
         return self.load_acknowledgements().copy()
+
+    @property
+    def inventory_df(self) -> pd.DataFrame:
+        return self.load_inventory().copy()
 
     def forecast_summary(self) -> pd.DataFrame:
         try:
@@ -219,6 +233,55 @@ class SupplyChainMCPClient:
         summary = summary.sort_values(by=["risk_score", "backorder_qty"], ascending=[False, False]).head(top_n)
         return summary
 
+    def search_inventory_snapshot(self, query: str) -> pd.DataFrame:
+        inventory = self.inventory_df
+        if inventory.empty or not query:
+            return inventory
+        query = str(query).strip()
+        mask = inventory["vendor_sku"].astype(str).str.contains(query, case=False, na=False)
+        if "inventory_description" in inventory.columns:
+            mask |= inventory["inventory_description"].astype(str).str.contains(query, case=False, na=False)
+        return inventory[mask]
+
+    def get_cut_supply_analysis(self, query: str | None = None) -> pd.DataFrame:
+        """Compare PO shortages with the newest available SKU inventory snapshot."""
+        acks = self.ack_df
+        inventory = self.inventory_df
+        if acks.empty or "vendor_sku" not in acks.columns:
+            return pd.DataFrame()
+
+        sku = acks["vendor_sku"].astype("string").str.strip()
+        valid = sku.notna() & sku.ne("")
+        po_supply = (
+            acks.loc[valid, ["ordered_qty", "confirmed_qty"]]
+            .assign(vendor_sku=sku.loc[valid])
+            .groupby("vendor_sku", as_index=False)[["ordered_qty", "confirmed_qty"]]
+            .sum()
+        )
+        po_supply["short_qty"] = (po_supply["ordered_qty"] - po_supply["confirmed_qty"]).clip(lower=0)
+        if "vendor_sku" not in inventory.columns:
+            inventory = pd.DataFrame(columns=["vendor_sku", "qty_available", "supplier_po_qty"])
+        result = po_supply.merge(inventory, on="vendor_sku", how="left")
+        for column in ("qty_available", "supplier_po_qty"):
+            if column not in result.columns:
+                result[column] = 0.0
+            result[column] = result[column].fillna(0.0)
+        # QtyAvailable is already the net supply position, including the
+        # supplier PO quantity. Keep the latter for reference only; adding it
+        # again would double-count inbound supply.
+        result["supply_available"] = result["qty_available"].clip(lower=0)
+        result["uncovered_short_qty"] = (result["short_qty"] - result["supply_available"]).clip(lower=0)
+        result["cut_reason"] = "PO shortfall covered by available supply"
+        result.loc[(result["short_qty"] > 0) & (result["supply_available"] <= 0), "cut_reason"] = "No available supply"
+        result.loc[(result["short_qty"] > 0) & (result["supply_available"] > 0) & (result["uncovered_short_qty"] > 0), "cut_reason"] = "Available supply does not cover the PO shortfall"
+        if query:
+            query = str(query).strip()
+            text_mask = result["vendor_sku"].astype(str).str.contains(query, case=False, na=False)
+            if "inventory_description" in result.columns:
+                text_mask |= result["inventory_description"].astype(str).str.contains(query, case=False, na=False)
+            result = result[text_mask]
+        return result.sort_values(["uncovered_short_qty", "short_qty"], ascending=False)
+
     def compute_dashboard_kpis(self) -> dict[str, float]:
         forecast = self.forecast_df
         acks = self.ack_df
@@ -275,7 +338,7 @@ class SupplyChainMCPClient:
     ) -> dict[str, object]:
         forecasts = self.forecast_df if not self.forecast_df.empty else None
         acks = self.ack_df if not self.ack_df.empty else None
-        root_service = RootCauseService(forecasts, acks)
+        root_service = RootCauseService(forecasts, acks, self.inventory_df)
         return root_service.root_cause_analysis(product, vendor, customer, po_number, lookback_months, recent_weeks)
 
     def get_vendor_performance(self) -> pd.DataFrame:

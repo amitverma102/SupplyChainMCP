@@ -266,6 +266,18 @@ def page_cut_analysis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: Suppl
         render_aggrid_table(forecast_matches.head(50))
         st.subheader("Matched Acknowledgement Records")
         render_aggrid_table(ack_matches.head(50))
+        inventory_matches = client.search_inventory_snapshot(search)
+        if not inventory_matches.empty:
+            st.subheader("Latest Inventory Snapshot")
+            render_aggrid_table(inventory_matches)
+        cut_supply = client.get_cut_supply_analysis(search)
+        if cut_supply.empty and not ack_matches.empty and "vendor_sku" in ack_matches.columns:
+            sku_values = ack_matches["vendor_sku"].dropna().astype(str).unique()
+            cut_supply = client.get_cut_supply_analysis()
+            cut_supply = cut_supply[cut_supply["vendor_sku"].isin(sku_values)]
+        if not cut_supply.empty:
+            st.subheader("PO shortage coverage")
+            render_aggrid_table(cut_supply.head(50))
         root_report = client.root_cause_analysis(product=search)
         st.subheader("Root Cause Summary")
         st.write(root_report)
@@ -317,6 +329,10 @@ def page_product_analytics(forecasts: pd.DataFrame, acks: pd.DataFrame, client: 
         render_aggrid_table(forecast_matches.head(50))
         st.subheader("Acknowledgement History")
         render_aggrid_table(ack_matches.head(50))
+        inventory_matches = client.search_inventory_snapshot(search)
+        if not inventory_matches.empty:
+            st.subheader("Latest Inventory Snapshot")
+            render_aggrid_table(inventory_matches)
         timeline = client.get_product_timeline(search)
         if not timeline.empty:
             plot_line_chart(timeline, x="month", y="forecast_qty", title="Forecast Trend")
@@ -362,9 +378,10 @@ def page_forecast_accuracy(forecasts: pd.DataFrame, acks: pd.DataFrame, client: 
 def page_inventory_risk(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChainMCPClient) -> None:
     st.markdown("# Inventory Risk")
     st.markdown("Identify products with poor fill rates, demand volatility, and supply risk.")
-    risk_products = client.get_top_risk_products(25)
+    risk_products = client.get_cut_supply_analysis()
     if not risk_products.empty:
-        plot_bar_chart(risk_products, x="vendor_sku", y="risk_score", title="Inventory Risk Score")
+        risk_products = risk_products[risk_products["short_qty"] > 0].head(25)
+        plot_bar_chart(risk_products, x="vendor_sku", y="uncovered_short_qty", title="Uncovered Inventory Risk")
         render_aggrid_table(risk_products)
     else:
         st.info("Inventory risk metrics are unavailable.")
@@ -389,7 +406,8 @@ def page_exception_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client
         return
     exceptions = acks.copy()
     exceptions["short_qty"] = exceptions["ordered_qty"].fillna(0) - exceptions["confirmed_qty"].fillna(0)
-    top_exceptions = exceptions.sort_values(by="short_qty", ascending=False).head(25)
+    inventory_supply = client.get_cut_supply_analysis()[["vendor_sku", "qty_available", "supplier_po_qty", "uncovered_short_qty", "cut_reason"]]
+    top_exceptions = exceptions.merge(inventory_supply, on="vendor_sku", how="left").sort_values(by="short_qty", ascending=False).head(25)
     render_aggrid_table(top_exceptions)
     st.subheader("Largest Shortages")
     download_dataframe(top_exceptions, label="Export Exceptions")

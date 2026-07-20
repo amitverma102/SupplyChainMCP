@@ -18,13 +18,14 @@ class RootCauseService:
     confidence levels and recommended actions.
     """
 
-    def __init__(self, forecasts: Optional[pd.DataFrame], acks: Optional[pd.DataFrame]):
+    def __init__(self, forecasts: Optional[pd.DataFrame], acks: Optional[pd.DataFrame], inventory: Optional[pd.DataFrame] = None):
         # forecasts: expected columns include vendor_sku, upc, buyer_part_number,
         # forecast_month_parsed (datetime) or forecast_month, forecast_qty
         # acks: expected columns include vendor_sku, upc, buyer_part_number,
         # ordered_qty, confirmed_qty, delivery_date, po_number
         self.forecasts = forecasts if forecasts is not None else pd.DataFrame()
         self.acks = acks if acks is not None else pd.DataFrame()
+        self.inventory = inventory if inventory is not None else pd.DataFrame()
 
     def _filter_product(self, product: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
         f = self.forecasts
@@ -73,6 +74,36 @@ class RootCauseService:
         df["fill_rate"] = np.where(df["forecast_qty"] > 0, df["confirmed_qty"] / df["forecast_qty"], np.nan)
         df["forecast_vs_actual_ratio"] = np.where(df["forecast_qty"] > 0, df["confirmed_qty"] / df["forecast_qty"], np.nan)
         return df.sort_index()
+
+    def _inventory_evidence(self, product: str, prod_f: pd.DataFrame, prod_a: pd.DataFrame) -> Dict[str, Any]:
+        if self.inventory.empty or "vendor_sku" not in self.inventory.columns:
+            return {}
+
+        sku_values = {str(product).strip()}
+        for df in (prod_f, prod_a):
+            if "vendor_sku" in df.columns:
+                sku_values.update(df["vendor_sku"].dropna().astype(str).str.strip())
+        inventory_sku = self.inventory["vendor_sku"].astype(str).str.strip()
+        matched = self.inventory[inventory_sku.isin(sku_values)].copy()
+        if matched.empty:
+            return {"inventory_match": False}
+
+        available = float(pd.to_numeric(matched.get("qty_available", 0), errors="coerce").fillna(0).sum())
+        supplier_po = float(pd.to_numeric(matched.get("supplier_po_qty", 0), errors="coerce").fillna(0).sum())
+        po_shortfall = 0.0
+        if not prod_a.empty and {"ordered_qty", "confirmed_qty"}.issubset(prod_a.columns):
+            po_shortfall = float((prod_a["ordered_qty"].fillna(0) - prod_a["confirmed_qty"].fillna(0)).clip(lower=0).sum())
+        return {
+            "inventory_match": True,
+            "qty_available": available,
+            "supplier_po_qty": supplier_po,
+            "po_shortfall_qty": po_shortfall,
+            # QtyAvailable already includes the supplier PO quantity from the
+            # inventory snapshot, so supplier_po is evidence only.
+            "supply_available": max(available, 0.0),
+            "uncovered_shortfall_qty": max(po_shortfall - max(available, 0.0), 0.0),
+            "snapshot_date": str(matched["inventory_snapshot_date"].max()) if "inventory_snapshot_date" in matched else None,
+        }
 
     def _detect_demand_spike(self, df_monthly: pd.DataFrame, window: int = 3, z_thresh: float = 3.0, recent_months: int = 6) -> Dict[str, Any]:
         if df_monthly.empty or df_monthly["confirmed_qty"].sum() == 0:
@@ -156,7 +187,7 @@ class RootCauseService:
         res["deteriorating"] = (slope < -0.01) or (earlier_avg > 0 and (earlier_avg - recent_avg) / max(earlier_avg, 1e-9) > 0.05)
         return res
 
-    def _classify(self, df_monthly: pd.DataFrame, spike_info: Dict[str, Any], cut_info: Dict[str, Any], vendor_trend: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _classify(self, df_monthly: pd.DataFrame, spike_info: Dict[str, Any], cut_info: Dict[str, Any], vendor_trend: Dict[str, Any], inventory_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         conclusions: List[Dict[str, Any]] = []
 
         # Demand exceeded forecast
@@ -179,6 +210,12 @@ class RootCauseService:
         # Vendor issues
         if vendor_trend.get("deteriorating"):
             conclusions.append({"cause": "vendor_under_supply", "confidence": "high" if vendor_trend.get("slope", 0) < -0.05 else "medium", "evidence": vendor_trend})
+
+        if inventory_info.get("inventory_match"):
+            if inventory_info["po_shortfall_qty"] > 0 and inventory_info["supply_available"] <= 0:
+                conclusions.append({"cause": "available_supply_depleted", "confidence": "high", "evidence": inventory_info})
+            elif inventory_info["uncovered_shortfall_qty"] > 0:
+                conclusions.append({"cause": "inventory_insufficient_for_po_shortfall", "confidence": "high", "evidence": inventory_info})
 
         # forecast missing
         if df_monthly["forecast_qty"].sum() == 0 and df_monthly["confirmed_qty"].sum() > 0:
@@ -221,12 +258,16 @@ class RootCauseService:
             report["summary"] = {"total_forecast": total_forecast, "total_confirmed": total_confirmed, "overall_fill_rate": overall_fill_rate}
 
             report["evidence"].append({"monthly_sample": df_monthly.tail(6).reset_index().to_dict(orient="records")})
+            inventory_info = self._inventory_evidence(product, prod_f, prod_a)
+            if inventory_info:
+                report["summary"].update({key: value for key, value in inventory_info.items() if key != "inventory_match"})
+                report["evidence"].append({"inventory_supply": inventory_info})
 
             spike_info = self._detect_demand_spike(df_monthly)
             cut_info = self._detect_product_cut(df_monthly)
             vendor_trend = self._vendor_performance_trend(df_monthly)
 
-            conclusions = self._classify(df_monthly, spike_info, cut_info, vendor_trend)
+            conclusions = self._classify(df_monthly, spike_info, cut_info, vendor_trend, inventory_info)
             report["conclusions"] = conclusions
 
             # produce recommendations based on conclusions
@@ -243,6 +284,10 @@ class RootCauseService:
                     recs.append("Open vendor performance case and consider alternative suppliers or expedite shipments.")
                 if cause == "forecast_missing":
                     recs.append("Reinstate forecast or adjust systems that generate forecasts; contact forecasting team.")
+                if cause == "available_supply_depleted":
+                    recs.append("Expedite replenishment or transfer stock: the available supply position does not cover the PO shortfall.")
+                if cause == "inventory_insufficient_for_po_shortfall":
+                    recs.append("Allocate available stock and expedite replenishment; the remaining demand is not covered by the available supply position.")
             report["recommendations"] = recs
 
             # include confidence summary
