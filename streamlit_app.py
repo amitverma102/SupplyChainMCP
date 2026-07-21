@@ -143,6 +143,74 @@ def parse_date_filters(filters: dict[str, list[str]], forecasts: pd.DataFrame, a
     return forecasts, acks
 
 
+def _display_label(value: str) -> str:
+    return value.replace("_", " ").strip().title()
+
+
+def _display_value(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:,.2f}"
+    return str(value)
+
+
+def render_root_cause_report(report: dict[str, Any], show_confidence: bool = True) -> None:
+    """Render an analysis report as readable metrics, findings, and tables."""
+    if show_confidence:
+        st.metric("Analysis confidence", f"{report.get('confidence', 0.0) * 100:.0f}%")
+
+    summary = report.get("summary", {})
+    if summary:
+        st.subheader("Summary")
+        columns = st.columns(min(4, len(summary)))
+        for index, (label, value) in enumerate(summary.items()):
+            if label.endswith("fill_rate") and pd.notna(value):
+                display_value = f"{float(value):.1%}"
+            else:
+                display_value = _display_value(value)
+            columns[index % len(columns)].metric(_display_label(label), display_value)
+
+    conclusions = report.get("conclusions", [])
+    if conclusions:
+        st.subheader("Findings")
+        for conclusion in conclusions:
+            cause = _display_label(conclusion.get("cause", "unknown"))
+            confidence = conclusion.get("confidence", "unknown").title()
+            st.markdown(f"**{cause}** — {confidence} confidence")
+            evidence = conclusion.get("evidence")
+            if isinstance(evidence, dict):
+                details = "; ".join(
+                    f"{_display_label(key)}: {_display_value(value)}"
+                    for key, value in evidence.items()
+                    if not isinstance(value, (dict, list))
+                )
+                if details:
+                    st.caption(details)
+
+    evidence_items = report.get("evidence", [])
+    if evidence_items:
+        st.subheader("Supporting evidence")
+        for item in evidence_items:
+            for label, values in item.items():
+                st.markdown(f"**{_display_label(label)}**")
+                if isinstance(values, list) and values:
+                    render_aggrid_table(pd.DataFrame(values), height=250)
+                elif isinstance(values, dict):
+                    render_aggrid_table(pd.DataFrame([values]), height=150)
+                elif values is not None:
+                    st.write(_display_value(values))
+
+    samples = report.get("supporting_ack_samples", [])
+    if samples:
+        st.subheader("Recent acknowledgement lines")
+        render_aggrid_table(pd.DataFrame(samples), height=300)
+
+    recommendations = report.get("recommendations", [])
+    if recommendations:
+        st.subheader("Recommended actions")
+        for recommendation in recommendations:
+            st.markdown(f"- {recommendation}")
+
+
 def compute_kpis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChainMCPClient) -> dict[str, dict[str, Any]]:
     metrics = client.compute_dashboard_kpis()
     return {
@@ -289,7 +357,7 @@ def page_cut_analysis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: Suppl
             render_aggrid_table(cut_supply.head(50))
         root_report = client.root_cause_analysis(product=search)
         st.subheader("Root Cause Summary")
-        st.write(root_report)
+        render_root_cause_report(root_report)
     else:
         st.info("Enter a search term to begin CUT analysis.")
 
@@ -300,18 +368,7 @@ def page_root_cause_analysis(forecasts: pd.DataFrame, acks: pd.DataFrame, client
     product = st.text_input("Search product / SKU / PO number")
     if product:
         report = client.root_cause_analysis(product)
-        st.metric("Confidence", f"{report.get('confidence', 0.0) * 100:.0f}%")
-        if report.get("summary"):
-            st.write(report["summary"])
-        if report.get("evidence"):
-            for item in report["evidence"]:
-                st.write(item)
-        if report.get("conclusions"):
-            st.write(report["conclusions"])
-        if report.get("recommendations"):
-            st.subheader("Recommendations")
-            for rec in report["recommendations"]:
-                st.write(f"- {rec}")
+        render_root_cause_report(report)
     else:
         st.info("Enter a product or PO identifier to generate root cause insights.")
 
@@ -470,9 +527,11 @@ def summarize_root_cause(report: dict[str, Any]) -> str:
 def page_settings(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChainMCPClient) -> None:
     st.markdown("# Settings")
     st.markdown("Manage the dashboard, refresh data, and review configuration.")
-    # Pydantic v2 removed keyword arguments from ``.json()``; serialize with
-    # ``model_dump_json()`` so the configuration remains nicely formatted.
-    st.code(client.cfg.model_dump_json(indent=2), language="json")
+    st.subheader("Configuration")
+    config = pd.json_normalize(client.cfg.model_dump()).rename(
+        columns=lambda column: _display_label(column.replace(".", " "))
+    )
+    st.dataframe(config, hide_index=True)
     if st.button("Refresh data cache"):
         client.refresh_data()
         # `load_data` is cached separately from the client.  Clear it so the
@@ -480,8 +539,6 @@ def page_settings(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCha
         load_data.clear()
         st.experimental_rerun()
     st.markdown("---")
-    st.write("Streamlit session state:")
-    st.write(st.session_state)
 
 
 def main() -> None:
