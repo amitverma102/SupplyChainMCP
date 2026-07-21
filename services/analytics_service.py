@@ -26,13 +26,18 @@ class AnalyticsService:
         self.conn.register(name, df)
 
     def forecast_summary(self) -> pd.DataFrame:
+        # ``forecast_month`` retains the source workbook header (for example,
+        # "February" or "2026 P01").  The loader puts its normalized date in
+        # ``forecast_month_parsed``; casting the source label makes DuckDB fail
+        # and callers currently turn that exception into an empty DataFrame.
         q = """
         SELECT
-          cast(forecast_month as date) as forecast_month,
+          forecast_month_parsed as forecast_month,
           SUM(forecast_qty) as forecast_qty
         FROM forecasts
-        GROUP BY forecast_month
-        ORDER BY forecast_month
+        WHERE forecast_month_parsed IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1
         """
         return self.conn.execute(q).df()
 

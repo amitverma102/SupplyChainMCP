@@ -57,11 +57,20 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, dict[str, list[str]], dict[
     return forecasts, acks, filter_options, date_ranges
 
 
+DATE_FILTER_KEYS = {"forecast_month", "ack_date"}
+
+
 def apply_filters(df: pd.DataFrame, filters: dict[str, list[str]]) -> pd.DataFrame:
+    """Apply categorical sidebar filters after date ranges are handled."""
     if df.empty:
         return df
     for key, selected in filters.items():
-        if not selected or key not in df.columns:
+        # Date ranges are applied separately by ``parse_date_filters``.  Their
+        # (start, end) tuple must not be compared through ``isin``.
+        if key in DATE_FILTER_KEYS or key not in df.columns:
+            continue
+        selected = [value for value in selected if value is not None and str(value).strip()]
+        if not selected:
             continue
         df = df[df[key].astype(str).isin(selected)]
     return df
