@@ -47,7 +47,7 @@ def get_client() -> SupplyChainMCPClient:
     return SupplyChainMCPClient()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl="5m")
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, dict[str, list[str]], dict[str, tuple[date | None, date | None]]]:
     client = get_client()
     forecasts = client.forecast_df

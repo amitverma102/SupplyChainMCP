@@ -42,18 +42,32 @@ class AnalyticsService:
         return self.conn.execute(q).df()
 
     def forecast_vs_actual(self) -> pd.DataFrame:
-        
-        try:        
+        try:
             q = """
+            WITH monthly_forecast AS (
+                SELECT
+                    forecast_month_parsed AS month,
+                    SUM(forecast_qty) AS forecast_qty
+                FROM forecasts
+                WHERE forecast_month_parsed IS NOT NULL
+                GROUP BY 1
+            ),
+            monthly_actual AS (
+                SELECT
+                    CAST(DATE_TRUNC('month', TRY_CAST(delivery_date AS TIMESTAMP)) AS DATE) AS month,
+                    SUM(confirmed_qty) AS actual_qty
+                FROM acks
+                WHERE TRY_CAST(delivery_date AS TIMESTAMP) IS NOT NULL
+                GROUP BY 1
+            )
             SELECT
-            f.forecast_month as month,
-            SUM(f.forecast_qty) as forecast_qty,
-            COALESCE(SUM(a.confirmed_qty),0) as actual_qty
-            FROM forecasts f, acks a
-            GROUP BY month
-            ORDER BY month
+                f.month,
+                f.forecast_qty,
+                a.actual_qty
+            FROM monthly_forecast f
+            LEFT JOIN monthly_actual a USING (month)
+            ORDER BY f.month
             """
-                        
             return self.conn.execute(q).df()
         except Exception as e:
             logger.exception("Unable to calculate forecast vs. actuals: %s", e)

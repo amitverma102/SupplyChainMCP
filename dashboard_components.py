@@ -257,7 +257,9 @@ def prepare_calendar_data(df: pd.DataFrame, x: Optional[str] = None) -> pd.DataF
         if parsed.notna().sum() < non_null_count * 0.8:
             continue
         result[column] = parsed
-        if column == x:
+        # Charts explicitly name their x-axis.  Tables do not, so use the
+        # first recognized calendar field as their chronological sort key.
+        if column == x or (x is None and sort_column is None):
             sort_column = column
 
     if sort_column:
