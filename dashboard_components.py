@@ -28,6 +28,7 @@ def load_app_style(theme: str = "dark") -> None:
     card_bg = "rgba(255, 255, 255, 0.92)" if is_light else "rgba(255, 255, 255, 0.05)"
     border_color = "rgba(15, 23, 42, 0.12)" if is_light else "rgba(255, 255, 255, 0.1)"
     secondary_text = "#4b5563" if is_light else "#a6b8d9"
+    explore_button_bg = "#0a84ff" if is_light else "#0d4b9f"
     st.markdown(
         f"""
         <style>
@@ -78,6 +79,19 @@ def load_app_style(theme: str = "dark") -> None:
         .small-button {{
             border-radius: 10px;
             background-color: #0a84ff;
+            color: white;
+        }}
+        /* KPI action buttons use keys such as kpi_0.  Keep their resting
+           state consistent with the blue background previously shown only
+           while hovering in the dark theme. */
+        div[class*="st-key-kpi_"] button {{
+            background-color: {explore_button_bg};
+            border-color: {explore_button_bg};
+            color: white;
+        }}
+        div[class*="st-key-kpi_"] button:hover {{
+            background-color: {explore_button_bg};
+            border-color: {explore_button_bg};
             color: white;
         }}
         </style>
@@ -257,9 +271,7 @@ def prepare_calendar_data(df: pd.DataFrame, x: Optional[str] = None) -> pd.DataF
         if parsed.notna().sum() < non_null_count * 0.8:
             continue
         result[column] = parsed
-        # Charts explicitly name their x-axis.  Tables do not, so use the
-        # first recognized calendar field as their chronological sort key.
-        if column == x or (x is None and sort_column is None):
+        if column == x:
             sort_column = column
 
     if sort_column:
@@ -267,23 +279,48 @@ def prepare_calendar_data(df: pd.DataFrame, x: Optional[str] = None) -> pd.DataF
     return result
 
 
+def prepare_table_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove import artefacts and normalize product descriptions for display."""
+    result = prepare_calendar_data(df)
+    unnamed_columns = [
+        column for column in result.columns if str(column).strip().lower().startswith("unnamed")
+    ]
+    result = result.drop(columns=unnamed_columns, errors="ignore")
+
+    description_names = {
+        "product_description",
+        "product description",
+        "description",
+        "ulta item description",
+    }
+    description_columns = [
+        column
+        for column in result.columns
+        if str(column).strip().lower().replace("_", " ") in description_names
+    ]
+    if description_columns:
+        # Prefer the canonical description, but fill it from source-specific
+        # fields when it is blank.  Only one description is shown in the UI.
+        descriptions = (
+            result[description_columns]
+            .replace(r"^\s*$", pd.NA, regex=True)
+            .bfill(axis=1)
+            .iloc[:, 0]
+        )
+        result = result.drop(columns=description_columns)
+        result["Product Description"] = descriptions
+
+    if "vendor_sku" in result.columns and "Product Description" in result.columns:
+        columns = list(result.columns)
+        columns.remove("Product Description")
+        vendor_sku_index = columns.index("vendor_sku") + 1
+        columns.insert(vendor_sku_index, "Product Description")
+        result = result[columns]
+    return result
+
+
 def render_aggrid_table(df: pd.DataFrame, height: int = 400, fit_columns: bool = True) -> None:
-    # All product-level tables should identify the item as well as its SKU.
-    # Different sources retain different raw description field names, so use a
-    # canonical display column and place it directly beside the SKU.
-    df = prepare_calendar_data(df)
-    if "vendor_sku" in df.columns:
-        if "product_description" not in df.columns:
-            for candidate in ("description", "ulta item description"):
-                if candidate in df.columns:
-                    df["product_description"] = df[candidate]
-                    break
-        if "product_description" in df.columns:
-            columns = list(df.columns)
-            columns.remove("product_description")
-            vendor_sku_index = columns.index("vendor_sku") + 1
-            columns.insert(vendor_sku_index, "product_description")
-            df = df[columns].rename(columns={"product_description": "Product Description"})
+    df = prepare_table_data(df)
 
     if ST_AGGRID_AVAILABLE:
         options = GridOptionsBuilder.from_dataframe(df)
