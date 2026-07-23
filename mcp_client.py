@@ -189,6 +189,30 @@ class SupplyChainMCPClient:
             if col in acks.columns:
                 ack_mask = ack_mask | acks[col].astype(str).str.contains(query, case=False, na=False)
         ack_matches = acks[ack_mask]
+
+        # A PO number is only present in acknowledgement records.  Once the
+        # PO lines are found, use their product identifiers to retrieve every
+        # corresponding forecast record (including all forecast months).
+        if not ack_matches.empty:
+            related_forecast_mask = pd.Series(False, index=forecast.index)
+            for column in ["vendor_sku", "buyer_part_number", "upc"]:
+                if column not in ack_matches.columns or column not in forecast.columns:
+                    continue
+                identifiers = (
+                    ack_matches[column]
+                    .astype("string")
+                    .str.strip()
+                    .dropna()
+                )
+                identifiers = identifiers[identifiers.ne("")].unique()
+                if len(identifiers):
+                    related_forecast_mask |= (
+                        forecast[column].astype("string").str.strip().isin(identifiers)
+                    )
+            if related_forecast_mask.any():
+                product_matches = pd.concat(
+                    [product_matches, forecast[related_forecast_mask]]
+                ).drop_duplicates()
         return product_matches, ack_matches
 
     def get_product_timeline(self, query: str) -> pd.DataFrame:
@@ -339,6 +363,8 @@ class SupplyChainMCPClient:
         forecasts = self.forecast_df if not self.forecast_df.empty else None
         acks = self.ack_df if not self.ack_df.empty else None
         root_service = RootCauseService(forecasts, acks, self.inventory_df)
+        # The root-cause service expands a PO entered in the product search to
+        # the acknowledgement line SKUs before evaluating forecast history.
         return root_service.root_cause_analysis(product, vendor, customer, po_number, lookback_months, recent_weeks)
 
     def get_vendor_performance(self) -> pd.DataFrame:

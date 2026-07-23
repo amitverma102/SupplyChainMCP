@@ -34,3 +34,38 @@ def test_root_cause_detects_spike_and_vendor_decline():
     assert "conclusions" in report
     causes = [c["cause"] for c in report["conclusions"]]
     assert "demand_spike" in causes or "vendor_under_supply" in causes
+
+
+def test_root_cause_resolves_a_po_to_its_acknowledgement_skus():
+    forecasts = pd.DataFrame(
+        {
+            "vendor_sku": ["SKU-1", "SKU-1", "SKU-2"],
+            "forecast_month_parsed": pd.to_datetime(["2026-06-01", "2026-07-01", "2026-06-01"]),
+            "forecast_qty": [10, 12, 20],
+        }
+    )
+    acknowledgements = pd.DataFrame(
+        {
+            "po_number": ["PO-100", "PO-100"],
+            "vendor_sku": ["SKU-1", "SKU-2"],
+            "delivery_date": ["2026-06-10", "2026-06-15"],
+            "ordered_qty": [10, 20],
+            "confirmed_qty": [8, 20],
+        }
+    )
+
+    report = RootCauseService(forecasts, acknowledgements).root_cause_analysis(
+        "PO-100", lookback_months=None
+    )
+
+    assert report["summary"]["total_forecast"] == 42.0
+    assert report["summary"]["total_confirmed"] == 28.0
+    assert all(finding["cause"] != "no_data" for finding in report["conclusions"])
+    assert report["confidence"] > 0
+
+
+def test_root_cause_no_data_report_has_numeric_confidence():
+    report = RootCauseService(pd.DataFrame(), pd.DataFrame()).root_cause_analysis("missing")
+
+    assert report["conclusions"] == [{"cause": "no_data", "confidence": "high"}]
+    assert report["confidence"] == 1.0

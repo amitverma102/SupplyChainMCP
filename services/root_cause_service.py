@@ -27,7 +27,14 @@ class RootCauseService:
         self.acks = acks if acks is not None else pd.DataFrame()
         self.inventory = inventory if inventory is not None else pd.DataFrame()
 
-    def _filter_product(self, product: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def _filter_product(self, product: str, po_number: Optional[str] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Return product records, expanding a PO number to its line-item SKUs.
+
+        A PO number exists only in acknowledgement data.  CUT analysis accepts
+        either a product identifier or a PO number, so a PO match must first
+        be resolved to its acknowledgement lines and then to the matching
+        forecast product identifiers.
+        """
         f = self.forecasts
         a = self.acks
         if f.empty and a.empty:
@@ -42,7 +49,39 @@ class RootCauseService:
                     mask = mask | (df[col].astype(str).fillna("") == str(product))
             return df[mask]
 
-        return match(f), match(a)
+        prod_f = match(f)
+        prod_a = match(a)
+
+        po_value = str(po_number if po_number is not None else product).strip()
+        if not po_value or "po_number" not in a.columns:
+            return prod_f, prod_a
+
+        po_matches = a[a["po_number"].astype("string").str.strip().eq(po_value)]
+        if po_matches.empty:
+            return prod_f, prod_a
+
+        # A PO may have several lines.  Retain all of them, then fetch every
+        # related forecast row using the identifiers shared by both feeds.
+        prod_a = pd.concat([prod_a, po_matches]).drop_duplicates()
+        related_forecast_mask = pd.Series(False, index=f.index)
+        for column in ["vendor_sku", "buyer_part_number", "upc"]:
+            if column not in po_matches.columns or column not in f.columns:
+                continue
+            identifiers = po_matches[column].astype("string").str.strip().dropna()
+            identifiers = identifiers[identifiers.ne("")].unique()
+            if len(identifiers):
+                related_forecast_mask |= f[column].astype("string").str.strip().isin(identifiers)
+        if related_forecast_mask.any():
+            prod_f = pd.concat([prod_f, f[related_forecast_mask]]).drop_duplicates()
+
+        return prod_f, prod_a
+
+    @staticmethod
+    def _confidence_summary(conclusions: List[Dict[str, Any]]) -> float:
+        """Convert finding confidence labels into the report's numeric score."""
+        scores = {"high": 1.0, "medium": 0.6, "low": 0.2}
+        values = [scores.get(str(item.get("confidence", "")).lower(), 0.0) for item in conclusions]
+        return float(np.mean(values)) if values else 0.0
 
     def _monthly_aggregates(self, prod_f: pd.DataFrame, prod_a: pd.DataFrame) -> pd.DataFrame:
         # create a monthly summary with forecast and actual confirmed_qty
@@ -239,9 +278,10 @@ class RootCauseService:
         report: Dict[str, Any] = {"product": product, "summary": {}, "evidence": [], "conclusions": [], "recommendations": []}
 
         try:
-            prod_f, prod_a = self._filter_product(product)
+            prod_f, prod_a = self._filter_product(product, po_number)
             if prod_f.empty and prod_a.empty:
                 report["conclusions"].append({"cause": "no_data", "confidence": "high"})
+                report["confidence"] = self._confidence_summary(report["conclusions"])
                 return report
 
             df_monthly = self._monthly_aggregates(prod_f, prod_a)
@@ -291,8 +331,7 @@ class RootCauseService:
             report["recommendations"] = recs
 
             # include confidence summary
-            confidences = [1.0 if c.get("confidence") == "high" else 0.6 if c.get("confidence") == "medium" else 0.2 for c in conclusions]
-            report["confidence"] = float(np.mean(confidences)) if confidences else 0.0
+            report["confidence"] = self._confidence_summary(conclusions)
 
             # attach small supporting sample of ack lines (latest 10)
             if not prod_a.empty:
@@ -301,6 +340,7 @@ class RootCauseService:
         except Exception as exc:
             logger.exception("root cause analysis error: %s", exc)
             report["conclusions"].append({"cause": "analysis_error", "confidence": "low", "error": str(exc)})
+            report["confidence"] = self._confidence_summary(report["conclusions"])
 
         return report
 
