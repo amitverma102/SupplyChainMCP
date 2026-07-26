@@ -130,15 +130,20 @@ def parse_date_filters(filters: dict[str, list[str]], forecasts: pd.DataFrame, a
     if "ack_date" in filters and filters["ack_date"]:
         start_date, end_date = filters["ack_date"][0]
         if not pd.isna(start_date) and not pd.isna(end_date):
-            if "delivery_date" in acks.columns:
+            if "ack_date" in acks.columns:
                 acks = acks[
-                    (pd.to_datetime(acks["delivery_date"], errors="coerce") >= pd.to_datetime(start_date))
-                    & (pd.to_datetime(acks["delivery_date"], errors="coerce") <= pd.to_datetime(end_date))
+                    (pd.to_datetime(acks["ack_date"], errors="coerce") >= pd.to_datetime(start_date))
+                    & (pd.to_datetime(acks["ack_date"], errors="coerce") <= pd.to_datetime(end_date))
                 ]
             elif "po_date" in acks.columns:
                 acks = acks[
                     (pd.to_datetime(acks["po_date"], errors="coerce") >= pd.to_datetime(start_date))
                     & (pd.to_datetime(acks["po_date"], errors="coerce") <= pd.to_datetime(end_date))
+                ]
+            elif "delivery_date" in acks.columns:
+                acks = acks[
+                    (pd.to_datetime(acks["delivery_date"], errors="coerce") >= pd.to_datetime(start_date))
+                    & (pd.to_datetime(acks["delivery_date"], errors="coerce") <= pd.to_datetime(end_date))
                 ]
     return forecasts, acks
 
@@ -230,7 +235,7 @@ def render_root_cause_report(report: dict[str, Any], show_confidence: bool = Tru
 
 
 def compute_kpis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChainMCPClient) -> dict[str, dict[str, Any]]:
-    metrics = client.compute_dashboard_kpis()
+    metrics = client.compute_dashboard_kpis(forecasts=forecasts, acknowledgements=acks)
     return {
         "Forecast Value": {"value": f"{metrics['forecast_value']:,.0f}", "delta": "", "detail": "Total forecast value"},
         "Ordered Quantity": {"value": f"{metrics['ordered_quantity']:,.0f}", "delta": "", "detail": "Total ordered units"},

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+import hashlib
 from io import BytesIO
 from typing import Optional
 
@@ -319,26 +320,45 @@ def prepare_table_data(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def render_aggrid_table(df: pd.DataFrame, height: int = 400, fit_columns: bool = True) -> None:    
+def render_aggrid_table(
+    df: pd.DataFrame,
+    height: int = 400,
+    fit_columns: bool = True,
+    expander_label: str = "View data table",
+) -> None:
+    """Render an AgGrid table inside a collapsed details control."""
     df = prepare_table_data(df)
+    fingerprint_source = f"{expander_label}|{height}|{df.to_json(date_format='iso', default_handler=str)}"
+    fingerprint = hashlib.md5(fingerprint_source.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+    expander = st.expander(
+        f"{expander_label} ({len(df):,} rows)",
+        expanded=False,
+        key=f"aggrid_expander_{fingerprint}",
+        on_change="rerun",
+    )
 
-    if ST_AGGRID_AVAILABLE:
-        options = GridOptionsBuilder.from_dataframe(df)
-        options.configure_default_column(editable=False, groupable=True, filter=True, resizable=True)
-        options.configure_selection(selection_mode="single", use_checkbox=False)
-        options.configure_grid_options(domLayout="normal")
-        if fit_columns:
-            options.configure_column("", flex=1)
-        AgGrid(
-            df,
-            height=height,
-            gridOptions=options.build(),
-            update_mode=GridUpdateMode.NO_UPDATE,
-            allow_unsafe_jscode=True,
-        )
-    else:
-        st.warning("Install `streamlit-aggrid` for a rich table experience. Falling back to Streamlit data frame.")
-        st.dataframe(df)
+    # A hidden parent has zero width, so AgGrid cannot calculate its layout.
+    # Render lazily after opening, when the expander is visible.
+    if expander.open:
+        with expander:
+            if ST_AGGRID_AVAILABLE:
+                options = GridOptionsBuilder.from_dataframe(df)
+                options.configure_default_column(editable=False, groupable=True, filter=True, resizable=True)
+                options.configure_selection(selection_mode="single", use_checkbox=False)
+                options.configure_grid_options(domLayout="normal")
+                if fit_columns:
+                    options.configure_column("", flex=1)
+                AgGrid(
+                    df,
+                    height=height,
+                    gridOptions=options.build(),
+                    update_mode=GridUpdateMode.NO_UPDATE,
+                    allow_unsafe_jscode=True,
+                    key=f"aggrid_{fingerprint}",
+                )
+            else:
+                st.warning("Install `streamlit-aggrid` for a rich table experience. Falling back to Streamlit data frame.")
+                st.dataframe(df)
 
 
 def download_dataframe(df: pd.DataFrame, label: str = "Download CSV") -> None:

@@ -11,6 +11,27 @@ from services.acknowledgement_service import AcknowledgementService
 from services.cache_service import CacheService
 
 
+def test_parse_edi_header_dates(tmp_path):
+    path = tmp_path / "ack.json"
+    path.write_text(json.dumps({
+        "Header": {"OrderHeader": {
+            "PurchaseOrderNumber": "PO-1",
+            "PurchaseOrderDate": "2026-01-05",
+            "AcknowledgementDate": "2026-01-07",
+            "Vendor": "Supplier X",
+        }},
+        "LineItem": [{
+            "OrderLine": {"VendorPartNumber": "SKU-1", "OrderQty": 1},
+            "LineItemAcknowledgement": [{"ItemScheduleQty": 1, "ItemScheduleDate": "2026-01-12"}],
+        }],
+    }))
+
+    row = AcknowledgementService(tmp_path).parse_file(path).iloc[0]
+
+    assert row["po_date"] == "2026-01-05"
+    assert row["ack_date"] == "2026-01-07"
+
+
 def test_parse_acknowledgement_json():
     # Create a temporary JSON file with test ack data
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:

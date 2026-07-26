@@ -33,6 +33,8 @@ class AckLineModel(BaseModel):
     confirmed_qty: float = 0.0
     price: Optional[float] = None
     status_code: Optional[str] = None
+    po_date: Optional[str] = None
+    ack_date: Optional[str] = None
     delivery_date: Optional[str] = None
 
     @field_validator("ordered_cases", "confirmed_cases", "pack_value", "ordered_qty", "confirmed_qty", mode="before")
@@ -70,8 +72,10 @@ class AcknowledgementService:
         if self.cache:
             cached = self.cache.get(str(path))
             if cached and cached.get("mtime") == mtime:
-                logger.debug("Skipping unchanged acknowledgement file %s", path)
-                return pd.DataFrame()
+                # The cache stores file metadata, not parsed acknowledgement
+                # rows. Files must still be parsed to rebuild the in-memory
+                # DataFrame after an app restart or data refresh.
+                logger.debug("Acknowledgement file is unchanged: %s", path)
 
         try:
             with path.open("r", encoding="utf-8") as f:
@@ -82,10 +86,12 @@ class AcknowledgementService:
 
         # Best-effort mapping; EDI->JSON formats vary
         header = raw.get("Header", {}) if isinstance(raw, dict) else {}
-        order_header = header.get("OrderHeader")
+        order_header = header.get("OrderHeader") or {}
         vendor = order_header.get("Vendor") or raw.get("vendor")
         customer = order_header.get("Customer") or raw.get("customer")
         po_number = order_header.get("PurchaseOrderNumber") or raw.get("poNumber") or raw.get("po")
+        po_date = order_header.get("PurchaseOrderDate") or raw.get("poDate")
+        ack_date = order_header.get("AcknowledgementDate") or raw.get("ackDate")
 
         lines = raw.get("LineItem") or raw.get("line_items") or []
         rows = []
@@ -113,6 +119,8 @@ class AcknowledgementService:
                 "pack_value": pack_value,
                 "ordered_qty": ordered_cases * pack_value,
                 "confirmed_qty": confirmed_cases * pack_value,
+                "po_date": po_date,
+                "ack_date": ack_date,
                 "delivery_date": ackLine[0].get("ItemScheduleDate"),               
                 "price": l.get("PurchasePrice"),                
             }

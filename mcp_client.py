@@ -214,12 +214,15 @@ class SupplyChainMCPClient:
         if "forecast_month" in forecast.columns:
             forecast_dates = pd.to_datetime(forecast["forecast_month"], errors="coerce")
             ranges["forecast_month"] = (forecast_dates.min(), forecast_dates.max())
-        if "delivery_date" in acks.columns:
-            ack_dates = pd.to_datetime(acks["delivery_date"], errors="coerce")
+        if "ack_date" in acks.columns:
+            ack_dates = pd.to_datetime(acks["ack_date"], errors="coerce")
             ranges["ack_date"] = (ack_dates.min(), ack_dates.max())
-        if "po_date" in acks.columns:
+        elif "po_date" in acks.columns:
             po_dates = pd.to_datetime(acks["po_date"], errors="coerce")
-            ranges["ack_date"] = (ranges["ack_date"][0] or po_dates.min(), ranges["ack_date"][1] or po_dates.max())
+            ranges["ack_date"] = (po_dates.min(), po_dates.max())
+        elif "delivery_date" in acks.columns:
+            delivery_dates = pd.to_datetime(acks["delivery_date"], errors="coerce")
+            ranges["ack_date"] = (delivery_dates.min(), delivery_dates.max())
         return ranges
 
     def search_inventory(self, query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -377,9 +380,14 @@ class SupplyChainMCPClient:
             result = result[text_mask]
         return result.sort_values(["uncovered_short_qty", "short_qty"], ascending=False)
 
-    def compute_dashboard_kpis(self) -> dict[str, float]:
-        forecast = self.forecast_df
-        acks = self.ack_df
+    def compute_dashboard_kpis(
+        self,
+        forecasts: Optional[pd.DataFrame] = None,
+        acknowledgements: Optional[pd.DataFrame] = None,
+    ) -> dict[str, float]:
+        """Compute KPIs from the supplied (possibly filtered) dashboard data."""
+        forecast = forecasts.copy() if forecasts is not None else self.forecast_df
+        acks = acknowledgements.copy() if acknowledgements is not None else self.ack_df
         metrics: dict[str, float] = {
             "forecast_value": float(forecast["forecast_qty"].sum()) if "forecast_qty" in forecast.columns else 0.0,
             "ordered_quantity": float(acks["ordered_qty"].sum()) if "ordered_qty" in acks.columns else 0.0,
