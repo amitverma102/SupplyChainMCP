@@ -319,7 +319,7 @@ def prepare_table_data(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def render_aggrid_table(df: pd.DataFrame, height: int = 400, fit_columns: bool = True) -> None:
+def render_aggrid_table(df: pd.DataFrame, height: int = 400, fit_columns: bool = True) -> None:    
     df = prepare_table_data(df)
 
     if ST_AGGRID_AVAILABLE:

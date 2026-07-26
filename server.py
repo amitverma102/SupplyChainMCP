@@ -11,6 +11,7 @@ from services.analytics_service import AnalyticsService
 from services.matching_service import MatchingService
 from services.cache_service import CacheService
 from services.root_cause_service import RootCauseService
+from services.supplier_po_service import SupplierPOService
 from services.reporting_service import ReportingService
 
 cfg = load_config(str(Path(__file__).resolve().parent / "config.yaml"))
@@ -39,13 +40,16 @@ reports_dir = resolve_dir(cfg.app.reports_dir)
 logs_dir = resolve_dir(cfg.app.logs_dir)
 forecasts_dir = resolve_dir(cfg.app.forecasts_dir)
 acknowledgements_dir = resolve_dir(cfg.app.acknowledgements_dir)
+supplier_pos_dir = resolve_dir(cfg.app.supplier_pos_dir)
 
 cache = CacheService(cache_dir / "metadata.db")
 forecast_svc = ForecastService(forecasts_dir, cache_service=cache)
 ack_svc = AcknowledgementService(acknowledgements_dir, cache_service=cache)
+supplier_po_svc = SupplierPOService(supplier_pos_dir)
 
 forecasts = forecast_svc.load_all()
 acks = ack_svc.load_all()
+supplier_pos = supplier_po_svc.load_all()
 
 analytics = AnalyticsService()
 if not forecasts.is_empty():
@@ -54,7 +58,7 @@ if not acks.empty:
     analytics.register_acknowledgements(acks)
 
 matching = MatchingService()
-root_cause = RootCauseService(forecasts.to_pandas() if not forecasts.is_empty() else None, acks)
+root_cause = RootCauseService(forecasts.to_pandas() if not forecasts.is_empty() else None, acks, supplier_pos=supplier_pos)
 
 # ---- Module-level FastMCP object: THIS is what `mcp install` scans for ----
 mcp = FastMCP(cfg.app.name)

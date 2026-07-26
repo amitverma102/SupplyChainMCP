@@ -144,11 +144,29 @@ def parse_date_filters(filters: dict[str, list[str]], forecasts: pd.DataFrame, a
 
 
 def _display_label(value: str) -> str:
+    labels = {
+        "po_shortfall_qty": "Purchase order quantity",
+        "uncovered_shortfall_qty": "Uncovered purchase order quantity",
+        "inventory_insufficient_for_po_shortfall": "Inventory insufficient for purchase order",
+        "forecast_for_purchase_order_month": "Forecast for purchase order month",
+        "no_forecast_issue": "No forecast issue",
+        "under_forecasting": "Under forecasting",
+        "forecast_below_purchase_order": "Forecast below purchase order",
+        "supplier_delivery_delay": "Supplier delivery delay",
+        "supplier_under_supply": "Supplier under supply",
+        "damaged_supplier_shipment": "Damaged supplier shipment",
+        "incorrect_supplier_shipment": "Incorrect supplier shipment",
+        "buyer_supplier_order_issue": "Supplier PO timing or quantity issue",
+    }
+    if value in labels:
+        return labels[value]
     return value.replace("_", " ").strip().title()
 
 
 def _display_value(value: Any) -> str:
-    if isinstance(value, float):
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return f"{value:,.0f}"
+    if isinstance(value, (float, np.floating)):
         return f"{value:,.2f}"
     return str(value)
 
@@ -339,6 +357,9 @@ def page_cut_analysis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: Suppl
     search = st.text_input("Search PO Number, Product, Vendor SKU, Customer or Vendor")
     if search:
         forecast_matches, ack_matches = client.search_inventory(search)
+        # Tables and calculations use the acknowledgement rows selected by
+        # the global date filter, rather than the client's full history.
+        ack_matches = ack_matches.loc[ack_matches.index.intersection(acks.index)]
         st.subheader("Matched Forecast Records")
         render_aggrid_table(forecast_matches.head(50))
         st.subheader("Matched Acknowledgement Records")
@@ -347,15 +368,19 @@ def page_cut_analysis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: Suppl
         if not inventory_matches.empty:
             st.subheader("Latest Inventory Snapshot")
             render_aggrid_table(inventory_matches)
-        cut_supply = client.get_cut_supply_analysis(search)
+        supplier_po_matches = client.search_supplier_pos(search, acknowledgements=acks)
+        if not supplier_po_matches.empty:
+            st.subheader("Supplier purchase orders")
+            render_aggrid_table(supplier_po_matches)
+        cut_supply = client.get_cut_supply_analysis(search, acknowledgements=acks)
         if cut_supply.empty and not ack_matches.empty and "vendor_sku" in ack_matches.columns:
             sku_values = ack_matches["vendor_sku"].dropna().astype(str).unique()
-            cut_supply = client.get_cut_supply_analysis()
+            cut_supply = client.get_cut_supply_analysis(acknowledgements=acks)
             cut_supply = cut_supply[cut_supply["vendor_sku"].isin(sku_values)]
         if not cut_supply.empty:
-            st.subheader("PO shortage coverage")
+            st.subheader("Purchase order coverage")
             render_aggrid_table(cut_supply.head(50))
-        root_report = client.root_cause_analysis(product=search)
+        root_report = client.root_cause_analysis(product=search, acknowledgements=acks)
         st.subheader("Root Cause Summary")
         render_root_cause_report(root_report)
     else:
@@ -367,7 +392,7 @@ def page_root_cause_analysis(forecasts: pd.DataFrame, acks: pd.DataFrame, client
     st.markdown("Use product, vendor SKU, or PO number to generate a structured diagnosis.")
     product = st.text_input("Search product / SKU / PO number")
     if product:
-        report = client.root_cause_analysis(product)
+        report = client.root_cause_analysis(product, acknowledgements=acks)
         render_root_cause_report(report)
     else:
         st.info("Enter a product or PO identifier to generate root cause insights.")

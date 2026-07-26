@@ -12,6 +12,7 @@ from services.cache_service import CacheService
 from services.forecast_service import ForecastService
 from services.inventory_service import InventoryService
 from services.root_cause_service import RootCauseService
+from services.supplier_po_service import SupplierPOService
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -57,6 +58,7 @@ class SupplyChainMCPClient:
         self.forecasts_dir = resolve_dir(self.cfg.app.forecasts_dir, self.base_dir)
         self.acknowledgements_dir = resolve_dir(self.cfg.app.acknowledgements_dir, self.base_dir)
         self.inventory_dir = resolve_dir(self.cfg.app.inventory_dir, self.base_dir)
+        self.supplier_pos_dir = resolve_dir(self.cfg.app.supplier_pos_dir, self.base_dir)
         self.cache_dir = resolve_dir(self.cfg.app.cache_dir, self.base_dir)
         self.reports_dir = resolve_dir(self.cfg.app.reports_dir, self.base_dir)
 
@@ -64,11 +66,13 @@ class SupplyChainMCPClient:
         self.forecast_service = ForecastService(self.forecasts_dir, cache_service=self.cache)
         self.ack_service = AcknowledgementService(self.acknowledgements_dir, cache_service=self.cache)
         self.inventory_service = InventoryService(self.inventory_dir)
+        self.supplier_po_service = SupplierPOService(self.supplier_pos_dir)
         self.analytics = AnalyticsService()
 
         self._forecasts: Optional[pl.DataFrame] = None
         self._acks: Optional[pd.DataFrame] = None
         self._inventory: Optional[pd.DataFrame] = None
+        self._supplier_pos: Optional[pd.DataFrame] = None
 
     def load_forecasts(self, force: bool = False) -> pl.DataFrame:
         if self._forecasts is None or force:
@@ -87,6 +91,11 @@ class SupplyChainMCPClient:
             self._inventory = self.inventory_service.load_latest()
         return self._inventory
 
+    def load_supplier_pos(self, force: bool = False) -> pd.DataFrame:
+        if self._supplier_pos is None or force:
+            self._supplier_pos = self.supplier_po_service.load_all()
+        return self._supplier_pos
+
     def _register_data(self) -> None:
         self.analytics = AnalyticsService()
         if self._forecasts is not None and len(self._forecasts) > 0:
@@ -98,6 +107,7 @@ class SupplyChainMCPClient:
         self._forecasts = None
         self._acks = None
         self._inventory = None
+        self._supplier_pos = None
         return self.load_forecasts(force=True), self.load_acknowledgements(force=True)
 
     @property
@@ -114,6 +124,46 @@ class SupplyChainMCPClient:
     @property
     def inventory_df(self) -> pd.DataFrame:
         return self.load_inventory().copy()
+
+    @property
+    def supplier_po_df(self) -> pd.DataFrame:
+        return self.load_supplier_pos().copy()
+
+    def search_supplier_pos(self, query: str, acknowledgements: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        supplier_pos = self.supplier_po_df
+        if acknowledgements is not None:
+            supplier_pos = self._supplier_received_as_of_acknowledgements(supplier_pos, acknowledgements)
+            supplier_pos["supplier_received_qty"] = supplier_pos["supplier_received_qty_as_of_ack"]
+        if supplier_pos.empty or not query:
+            return supplier_pos
+        query = str(query).strip()
+        mask = pd.Series(False, index=supplier_pos.index)
+        for column in ["supplier_po_number", "vendor_sku", "supplier_issue_type", "supplier_status"]:
+            if column in supplier_pos.columns:
+                mask |= supplier_pos[column].astype(str).str.contains(query, case=False, na=False)
+        return supplier_pos[mask]
+
+    @staticmethod
+    def _supplier_received_as_of_acknowledgements(
+        supplier_pos: pd.DataFrame, acknowledgements: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Count supplier receipts only when they existed by the ack date."""
+        result = supplier_pos.copy()
+        if result.empty:
+            return result
+        result["supplier_received_qty_as_of_ack"] = 0.0
+        if acknowledgements.empty or not {"vendor_sku", "delivery_date"}.issubset(acknowledgements.columns):
+            return result
+        ack_dates = acknowledgements.copy()
+        ack_dates["acknowledgement_date"] = pd.to_datetime(ack_dates["delivery_date"], errors="coerce")
+        cutoffs = ack_dates.groupby(ack_dates["vendor_sku"].astype("string").str.strip())["acknowledgement_date"].max()
+        result["acknowledgement_date"] = result["vendor_sku"].astype("string").str.strip().map(cutoffs)
+        received_date = pd.to_datetime(result["actual_receipt_date"], errors="coerce")
+        eligible = received_date.notna() & result["acknowledgement_date"].notna() & received_date.le(result["acknowledgement_date"])
+        result.loc[eligible, "supplier_received_qty_as_of_ack"] = pd.to_numeric(
+            result.loc[eligible, "supplier_received_qty"], errors="coerce"
+        ).fillna(0.0)
+        return result
 
     def forecast_summary(self) -> pd.DataFrame:
         try:
@@ -267,9 +317,13 @@ class SupplyChainMCPClient:
             mask |= inventory["inventory_description"].astype(str).str.contains(query, case=False, na=False)
         return inventory[mask]
 
-    def get_cut_supply_analysis(self, query: str | None = None) -> pd.DataFrame:
-        """Compare PO shortages with the newest available SKU inventory snapshot."""
-        acks = self.ack_df
+    def get_cut_supply_analysis(
+        self,
+        query: str | None = None,
+        acknowledgements: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """Compare purchase orders with the newest available SKU inventory snapshot."""
+        acks = acknowledgements.copy() if acknowledgements is not None else self.ack_df
         inventory = self.inventory_df
         if acks.empty or "vendor_sku" not in acks.columns:
             return pd.DataFrame()
@@ -286,6 +340,20 @@ class SupplyChainMCPClient:
         if "vendor_sku" not in inventory.columns:
             inventory = pd.DataFrame(columns=["vendor_sku", "qty_available", "supplier_po_qty"])
         result = po_supply.merge(inventory, on="vendor_sku", how="left")
+        supplier_pos = self._supplier_received_as_of_acknowledgements(self.supplier_po_df, acks)
+        if not supplier_pos.empty and "vendor_sku" in supplier_pos.columns:
+            supplier_summary = (
+                supplier_pos.groupby("vendor_sku", as_index=False)
+                .agg(
+                    supplier_ordered_qty=("supplier_ordered_qty", "sum"),
+                    supplier_confirmed_qty=("supplier_confirmed_qty", "sum"),
+                    supplier_received_qty=("supplier_received_qty_as_of_ack", "sum"),
+                    damaged_qty=("damaged_qty", "sum"),
+                    incorrect_qty=("incorrect_qty", "sum"),
+                    supplier_issue_types=("supplier_issue_type", lambda values: ", ".join(sorted(set(values.astype(str)) - {"NONE"}))),
+                )
+            )
+            result = result.merge(supplier_summary, on="vendor_sku", how="left")
         for column in ("qty_available", "supplier_po_qty"):
             if column not in result.columns:
                 result[column] = 0.0
@@ -295,9 +363,12 @@ class SupplyChainMCPClient:
         # again would double-count inbound supply.
         result["supply_available"] = result["qty_available"].clip(lower=0)
         result["uncovered_short_qty"] = (result["short_qty"] - result["supply_available"]).clip(lower=0)
-        result["cut_reason"] = "PO shortfall covered by available supply"
+        result["cut_reason"] = "Purchase order covered by available supply"
         result.loc[(result["short_qty"] > 0) & (result["supply_available"] <= 0), "cut_reason"] = "No available supply"
-        result.loc[(result["short_qty"] > 0) & (result["supply_available"] > 0) & (result["uncovered_short_qty"] > 0), "cut_reason"] = "Available supply does not cover the PO shortfall"
+        result.loc[(result["short_qty"] > 0) & (result["supply_available"] > 0) & (result["uncovered_short_qty"] > 0), "cut_reason"] = "Available supply does not cover the purchase order"
+        if "supplier_issue_types" in result.columns:
+            supplier_exception = result["supplier_issue_types"].fillna("").ne("")
+            result.loc[supplier_exception, "cut_reason"] = "Supplier PO exception: " + result.loc[supplier_exception, "supplier_issue_types"]
         if query:
             query = str(query).strip()
             text_mask = result["vendor_sku"].astype(str).str.contains(query, case=False, na=False)
@@ -359,10 +430,15 @@ class SupplyChainMCPClient:
         po_number: Optional[str] = None,
         lookback_months: int = 12,
         recent_weeks: int = 8,
+        acknowledgements: Optional[pd.DataFrame] = None,
     ) -> dict[str, object]:
         forecasts = self.forecast_df if not self.forecast_df.empty else None
-        acks = self.ack_df if not self.ack_df.empty else None
-        root_service = RootCauseService(forecasts, acks, self.inventory_df)
+        # CUT and Root Cause pass the sidebar-filtered acknowledgement rows
+        # here so actuals, PO quantities, and three-month shipment checks use
+        # only the selected date range.
+        source_acks = acknowledgements.copy() if acknowledgements is not None else self.ack_df
+        acks = source_acks if not source_acks.empty else None
+        root_service = RootCauseService(forecasts, acks, self.inventory_df, self.supplier_po_df)
         # The root-cause service expands a PO entered in the product search to
         # the acknowledgement line SKUs before evaluating forecast history.
         return root_service.root_cause_analysis(product, vendor, customer, po_number, lookback_months, recent_weeks)
