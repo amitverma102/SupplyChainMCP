@@ -325,7 +325,8 @@ def render_aggrid_table(
     height: int = 400,
     fit_columns: bool = True,
     expander_label: str = "View data table",
-) -> None:
+    return_selection: bool = False,
+) -> list[dict] | None:
     """Render an AgGrid table inside a collapsed details control."""
     df = prepare_table_data(df)
     fingerprint_source = f"{expander_label}|{height}|{df.to_json(date_format='iso', default_handler=str)}"
@@ -337,28 +338,39 @@ def render_aggrid_table(
         on_change="rerun",
     )
 
+    selected_rows = None
     # A hidden parent has zero width, so AgGrid cannot calculate its layout.
     # Render lazily after opening, when the expander is visible.
-    if expander.open:
+    if getattr(expander, "open", True):
         with expander:
             if ST_AGGRID_AVAILABLE:
                 options = GridOptionsBuilder.from_dataframe(df)
                 options.configure_default_column(editable=False, groupable=True, filter=True, resizable=True)
-                options.configure_selection(selection_mode="single", use_checkbox=False)
+                if return_selection:
+                    options.configure_selection(selection_mode="single", use_checkbox=True)
+                else:
+                    options.configure_selection(selection_mode="single", use_checkbox=False)
                 options.configure_grid_options(domLayout="normal")
                 if fit_columns:
                     options.configure_column("", flex=1)
-                AgGrid(
+                response = AgGrid(
                     df,
                     height=height,
                     gridOptions=options.build(),
-                    update_mode=GridUpdateMode.NO_UPDATE,
+                    update_mode=GridUpdateMode.SELECTION_CHANGED if return_selection else GridUpdateMode.NO_UPDATE,
                     allow_unsafe_jscode=True,
                     key=f"aggrid_{fingerprint}",
                 )
+                if return_selection and response and "selected_rows" in response:
+                    sel = response["selected_rows"]
+                    if hasattr(sel, "to_dict"):
+                        selected_rows = sel.to_dict("records")
+                    else:
+                        selected_rows = sel
             else:
                 st.warning("Install `streamlit-aggrid` for a rich table experience. Falling back to Streamlit data frame.")
                 st.dataframe(df)
+    return selected_rows
 
 
 def download_dataframe(df: pd.DataFrame, label: str = "Download CSV") -> None:
@@ -404,7 +416,7 @@ def plot_gauge(value: float, title: str, subtitle: Optional[str] = None) -> None
         )
     )
     fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_markdown_card(title: str, subtitle: str, value: str) -> None:

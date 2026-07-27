@@ -121,30 +121,34 @@ def build_filter_controls(filter_options: dict[str, list[str]], date_ranges: dic
 
 def parse_date_filters(filters: dict[str, list[str]], forecasts: pd.DataFrame, acks: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     if "forecast_month" in filters and filters["forecast_month"]:
-        start_date, end_date = filters["forecast_month"][0]
-        if not pd.isna(start_date) and not pd.isna(end_date):
-            forecasts = forecasts[
-                (forecasts["forecast_month"] >= pd.to_datetime(start_date))
-                & (forecasts["forecast_month"] <= pd.to_datetime(end_date))
-            ]
+        dates = filters["forecast_month"][0]
+        if isinstance(dates, (tuple, list)) and len(dates) == 2:
+            start_date, end_date = dates
+            if not pd.isna(start_date) and not pd.isna(end_date):
+                forecasts = forecasts[
+                    (forecasts["forecast_month"] >= pd.to_datetime(start_date))
+                    & (forecasts["forecast_month"] <= pd.to_datetime(end_date))
+                ]
     if "ack_date" in filters and filters["ack_date"]:
-        start_date, end_date = filters["ack_date"][0]
-        if not pd.isna(start_date) and not pd.isna(end_date):
-            if "ack_date" in acks.columns:
-                acks = acks[
-                    (pd.to_datetime(acks["ack_date"], errors="coerce") >= pd.to_datetime(start_date))
-                    & (pd.to_datetime(acks["ack_date"], errors="coerce") <= pd.to_datetime(end_date))
-                ]
-            elif "po_date" in acks.columns:
-                acks = acks[
-                    (pd.to_datetime(acks["po_date"], errors="coerce") >= pd.to_datetime(start_date))
-                    & (pd.to_datetime(acks["po_date"], errors="coerce") <= pd.to_datetime(end_date))
-                ]
-            elif "delivery_date" in acks.columns:
-                acks = acks[
-                    (pd.to_datetime(acks["delivery_date"], errors="coerce") >= pd.to_datetime(start_date))
-                    & (pd.to_datetime(acks["delivery_date"], errors="coerce") <= pd.to_datetime(end_date))
-                ]
+        dates = filters["ack_date"][0]
+        if isinstance(dates, (tuple, list)) and len(dates) == 2:
+            start_date, end_date = dates
+            if not pd.isna(start_date) and not pd.isna(end_date):
+                if "ack_date" in acks.columns:
+                    acks = acks[
+                        (pd.to_datetime(acks["ack_date"], errors="coerce") >= pd.to_datetime(start_date))
+                        & (pd.to_datetime(acks["ack_date"], errors="coerce") <= pd.to_datetime(end_date))
+                    ]
+                elif "po_date" in acks.columns:
+                    acks = acks[
+                        (pd.to_datetime(acks["po_date"], errors="coerce") >= pd.to_datetime(start_date))
+                        & (pd.to_datetime(acks["po_date"], errors="coerce") <= pd.to_datetime(end_date))
+                    ]
+                elif "delivery_date" in acks.columns:
+                    acks = acks[
+                        (pd.to_datetime(acks["delivery_date"], errors="coerce") >= pd.to_datetime(start_date))
+                        & (pd.to_datetime(acks["delivery_date"], errors="coerce") <= pd.to_datetime(end_date))
+                    ]
     return forecasts, acks
 
 
@@ -209,6 +213,12 @@ def render_root_cause_report(report: dict[str, Any], show_confidence: bool = Tru
                 if details:
                     st.caption(details)
 
+    recommendations = report.get("recommendations", [])
+    if recommendations:
+        st.subheader("Recommended actions")
+        for recommendation in recommendations:
+            st.markdown(f"- {recommendation}")
+
     evidence_items = report.get("evidence", [])
     if evidence_items:
         st.subheader("Supporting evidence")
@@ -226,12 +236,6 @@ def render_root_cause_report(report: dict[str, Any], show_confidence: bool = Tru
     if samples:
         st.subheader("Recent acknowledgement lines")
         render_aggrid_table(pd.DataFrame(samples), height=300)
-
-    recommendations = report.get("recommendations", [])
-    if recommendations:
-        st.subheader("Recommended actions")
-        for recommendation in recommendations:
-            st.markdown(f"- {recommendation}")
 
 
 def compute_kpis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChainMCPClient) -> dict[str, dict[str, Any]]:
@@ -281,9 +285,177 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
 
     st.markdown("---")
     st.subheader("Top Risk Products")
-    risk_products = client.get_top_risk_products(10)
+    risk_products = client.get_top_risk_products(10, acknowledgements=acks)
     if not risk_products.empty:
-        render_aggrid_table(risk_products)
+        selected_rows = render_aggrid_table(risk_products, return_selection=True)
+        
+        if selected_rows:
+            selected_product = selected_rows[0]
+            product_name = selected_product.get("Product Description", selected_product.get("vendor_sku", "Unknown Product"))
+            sku = selected_product.get("vendor_sku")
+            
+            with st.expander(f"Product Issue Analysis: {product_name}", expanded=True):
+                st.markdown("## Findings")
+                st.markdown(f"**Item / Location review · Snapshot {pd.Timestamp.now().strftime('%Y-%m-%d')}**")
+                
+                cache_key = f"root_cause_report_v5_{sku}"
+                if cache_key not in st.session_state:
+                    with st.spinner("Analyzing root causes..."):
+                        st.session_state[cache_key] = client.root_cause_analysis(product=sku, acknowledgements=acks)
+                
+                report = st.session_state[cache_key]
+                conclusions = report.get("conclusions", [])
+                
+                missing_forecast = any(c.get("cause") == "missing_forecast_data" for c in conclusions)
+                missing_supplier = any(c.get("cause") == "missing_supplier_data" for c in conclusions)
+                missing_inventory = any(c.get("cause") == "missing_inventory_data" for c in conclusions)
+
+                forecast_causes = [c for c in conclusions if c.get("cause") in ("under_forecasting", "forecast_below_purchase_order")]
+                supplier_causes = [c for c in conclusions if any(term in str(c.get("cause")).lower() for term in ("supplier", "vendor", "buyer_supplier")) and not str(c.get("cause")).startswith("missing_")]
+                inventory_causes = [c for c in conclusions if any(term in str(c.get("cause")).lower() for term in ("inventory", "supply_depleted")) and not str(c.get("cause")).startswith("missing_")]
+                
+                forecast_flag = bool(forecast_causes)
+                supplier_flag = bool(supplier_causes)
+                inventory_flag = bool(inventory_causes)
+
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if missing_forecast:
+                        lbl = "⚪ Forecast vs PO - Missing"
+                    else:
+                        lbl = "🔴 Forecast vs PO - Flagged" if forecast_flag else "🟢 Forecast vs PO - On track"
+                    if st.button(lbl, key="btn_forecast", use_container_width=True):
+                        st.session_state["product_analysis_tab"] = "forecast"
+                        st.session_state["product_analysis_sku"] = sku
+                with col2:
+                    if missing_supplier:
+                        lbl = "⚪ Supplier Pipeline - Missing"
+                    else:
+                        lbl = "🔴 Supplier Pipeline - Flagged" if supplier_flag else "🟢 Supplier Pipeline - On track"
+                    if st.button(lbl, key="btn_supplier", use_container_width=True):
+                        st.session_state["product_analysis_tab"] = "supplier"
+                        st.session_state["product_analysis_sku"] = sku
+                with col3:
+                    if missing_inventory:
+                        lbl = "⚪ Inventory Coverage - Missing"
+                    else:
+                        lbl = "🔴 Inventory Coverage - Flagged" if inventory_flag else "🟢 Inventory Coverage - On track"
+                    if st.button(lbl, key="btn_inventory", use_container_width=True):
+                        st.session_state["product_analysis_tab"] = "inventory"
+                        st.session_state["product_analysis_sku"] = sku
+
+                st.caption("Click a light to see the analysis behind it.")
+
+                if st.session_state.get("product_analysis_sku") == sku:
+                    tab = st.session_state.get("product_analysis_tab")
+                    po_months = []
+                    for c in conclusions:
+                        if "purchase_order_months" in c.get("evidence", {}):
+                            po_months = c["evidence"]["purchase_order_months"]
+                            break
+
+                    def filter_last_3_po_months(df, date_col="month"):
+                        if not po_months or df.empty:
+                            return df.tail(3)
+                        df["_temp_dt"] = pd.to_datetime(df[date_col])
+                        max_po = pd.to_datetime(max(po_months))
+                        min_po = max_po - pd.DateOffset(months=2)
+                        filtered = df[(df["_temp_dt"] >= min_po) & (df["_temp_dt"] <= max_po)].copy()
+                        if filtered.empty:
+                            return df.tail(3)
+                        return filtered.drop(columns=["_temp_dt"])
+
+                    if tab == "forecast":
+                        def plot_forecast_chart():
+                            monthly_sample = next((e["monthly_sample"] for e in report.get("evidence", []) if "monthly_sample" in e), [])
+                            if monthly_sample:
+                                df_monthly = pd.DataFrame(monthly_sample)
+                                df_monthly = filter_last_3_po_months(df_monthly)
+                                if not df_monthly.empty:
+                                    df_monthly["month"] = pd.to_datetime(df_monthly["month"]).dt.strftime("%b %Y")
+                                    df_monthly = df_monthly.rename(columns={"forecast_qty": "Forecast"})
+                                    fig = px.bar(df_monthly, x="month", y=["Forecast", "Actual PO Quantity"], barmode="group",
+                                                 title="Forecast vs Actual PO", labels={"value": "Quantity", "variable": "Metric"})
+                                    st.plotly_chart(fig, use_container_width=True)
+
+                        if missing_forecast:
+                            st.info("No supporting data found.")
+                        elif forecast_causes:
+                            cause = forecast_causes[0]
+                            st.error(f"Yes, likely due to {_display_label(cause.get('cause'))} ({cause.get('confidence')} confidence).")
+                            evidence = cause.get("evidence", {})
+                            st.write(f"**Last 3 Months Forecast:** {evidence.get('last_three_month_forecast', 0):.0f}")
+                            st.write(f"**Actual PO Quantity:** {evidence.get('purchase_order_qty', 0):.0f}")
+                            plot_forecast_chart()
+                        else:
+                            st.success("No incorrect forecast issues identified as the root cause.")
+                            no_forecast = [c for c in conclusions if c.get("cause") == "no_forecast_issue"]
+                            if no_forecast:
+                                evidence = no_forecast[0].get("evidence", {})
+                                st.write(f"**Last 3 Months Forecast:** {evidence.get('last_three_month_forecast', 0):.0f}")
+                                st.write(f"**Actual PO Quantity:** {evidence.get('purchase_order_qty', 0):.0f}")
+                                plot_forecast_chart()
+                    elif tab == "supplier":
+                        def plot_supplier_chart():
+                            supplier_evidence = next((e["supplier_purchase_orders"] for e in report.get("evidence", []) if "supplier_purchase_orders" in e), {})
+                            monthly_sample = next((e["monthly_sample"] for e in report.get("evidence", []) if "monthly_sample" in e), [])
+                            if supplier_evidence:
+                                st.write(f"**Supplier Ordered Qty:** {supplier_evidence.get('supplier_ordered_qty', 0):.0f}")
+                                st.write(f"**Supplier Fulfilled Qty:** {supplier_evidence.get('supplier_received_qty', 0):.0f}")
+                                s_monthly = supplier_evidence.get("supplier_monthly", [])
+                                if s_monthly and monthly_sample:
+                                    df_s = pd.DataFrame(s_monthly)
+                                    df_m = pd.DataFrame(monthly_sample)
+                                    df_m = filter_last_3_po_months(df_m)
+                                    if not df_s.empty and not df_m.empty:
+                                        df_s["month"] = pd.to_datetime(df_s["month"]).dt.strftime("%Y-%m")
+                                        df_m["month"] = pd.to_datetime(df_m["month"]).dt.strftime("%Y-%m")
+                                        df = pd.merge(df_m, df_s, on="month", how="left").fillna(0)
+                                        df["month_label"] = pd.to_datetime(df["month"]).dt.strftime("%b %Y")
+                                        df = df.rename(columns={"supplier_fulfilled_qty": "Supplier Fulfilled"})
+                                        fig = px.bar(df, x="month_label", y=["Supplier Fulfilled", "Actual PO Quantity"], barmode="group",
+                                                     title="Supplier Fulfilled vs Vendor PO Ordered", labels={"value": "Quantity", "variable": "Metric"})
+                                        st.plotly_chart(fig, use_container_width=True)
+
+                        if missing_supplier:
+                            st.info("No supporting data found.")
+                        elif supplier_causes:
+                            cause = supplier_causes[0]
+                            st.error(f"Yes, likely due to {_display_label(cause.get('cause'))} ({cause.get('confidence')} confidence).")
+                            plot_supplier_chart()
+                        else:
+                            st.success("No supplier pipeline issues identified as the root cause.")
+                            plot_supplier_chart()
+                    elif tab == "inventory":
+                        def plot_inventory_chart():
+                            inventory_evidence = next((e["inventory_supply"] for e in report.get("evidence", []) if "inventory_supply" in e), {})
+                            monthly_sample = next((e["monthly_sample"] for e in report.get("evidence", []) if "monthly_sample" in e), [])
+                            if inventory_evidence:
+                                st.write(f"**Inventory Qty Available:** {inventory_evidence.get('qty_available', 0):.0f}")
+                                st.write(f"**PO Shortfall Qty:** {inventory_evidence.get('po_shortfall_qty', 0):.0f}")
+                            if monthly_sample and inventory_evidence:
+                                df_inv = pd.DataFrame(monthly_sample)
+                                df_inv = filter_last_3_po_months(df_inv)
+                                if not df_inv.empty:
+                                    df_inv["month"] = pd.to_datetime(df_inv["month"]).dt.strftime("%b %Y")
+                                    # Inventory is a snapshot, duplicate across the 3 months for charting
+                                    df_inv["inventory_qty"] = inventory_evidence.get("qty_available", 0)
+                                    df_inv = df_inv.rename(columns={"inventory_qty": "Inventory"})
+                                    fig = px.bar(df_inv, x="month", y=["Inventory", "Actual PO Quantity"], barmode="group",
+                                                 title="Inventory vs PO Ordered", labels={"value": "Quantity", "variable": "Metric"})
+                                    st.plotly_chart(fig, use_container_width=True)
+
+                        if missing_inventory:
+                            st.info("No supporting data found.")
+                        elif inventory_causes:
+                            cause = inventory_causes[0]
+                            st.error(f"Yes, likely due to {_display_label(cause.get('cause'))} ({cause.get('confidence')} confidence).")
+                            plot_inventory_chart()
+                        else:
+                            st.success("No inventory issues identified as the root cause.")
+                            plot_inventory_chart()
+
         download_dataframe(risk_products, label="Export Risk Products")
     else:
         st.info("No risk product summary available.")
@@ -365,6 +537,10 @@ def page_cut_analysis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: Suppl
         # Tables and calculations use the acknowledgement rows selected by
         # the global date filter, rather than the client's full history.
         ack_matches = ack_matches.loc[ack_matches.index.intersection(acks.index)]
+        root_report = client.root_cause_analysis(product=search, acknowledgements=acks)
+        st.subheader("Root Cause Summary")
+        render_root_cause_report(root_report)
+
         st.subheader("Matched Forecast Records")
         render_aggrid_table(forecast_matches.head(50))
         st.subheader("Matched Acknowledgement Records")
@@ -385,9 +561,6 @@ def page_cut_analysis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: Suppl
         if not cut_supply.empty:
             st.subheader("Purchase order coverage")
             render_aggrid_table(cut_supply.head(50))
-        root_report = client.root_cause_analysis(product=search, acknowledgements=acks)
-        st.subheader("Root Cause Summary")
-        render_root_cause_report(root_report)
     else:
         st.info("Enter a search term to begin CUT analysis.")
 

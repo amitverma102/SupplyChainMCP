@@ -289,8 +289,8 @@ class SupplyChainMCPClient:
         timeline = timeline.sort_values("month").fillna(0)
         return timeline
 
-    def get_top_risk_products(self, top_n: int = 10) -> pd.DataFrame:
-        df = self.ack_df.copy()
+    def get_top_risk_products(self, top_n: int = 10, acknowledgements: pd.DataFrame | None = None) -> pd.DataFrame:
+        df = acknowledgements.copy() if acknowledgements is not None else self.ack_df.copy()
         if df.empty or "vendor_sku" not in df.columns:
             return pd.DataFrame()
         df["backorder_qty"] = df["ordered_qty"].fillna(0) - df["confirmed_qty"].fillna(0)
@@ -302,6 +302,12 @@ class SupplyChainMCPClient:
         if "product_description" in df.columns:
             aggregations["product_description"] = "first"
         summary = df.groupby("vendor_sku", as_index=False).agg(aggregations)
+        
+        # Only include products that were CUT
+        summary = summary[summary["backorder_qty"] > 0]
+        if summary.empty:
+            return pd.DataFrame()
+
         summary["fill_rate"] = summary.apply(
             lambda row: float(row["confirmed_qty"] / row["ordered_qty"]) if row["ordered_qty"] > 0 else 0.0,
             axis=1,

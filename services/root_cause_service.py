@@ -109,8 +109,9 @@ class RootCauseService:
 
         fagg = f.groupby("month", dropna=True)["forecast_qty"].sum().rename("forecast_qty")
         aagg = a.groupby("month", dropna=True)["confirmed_qty"].sum().rename("confirmed_qty")
+        aagg_ord = a.groupby("month", dropna=True)["ordered_qty"].sum().rename("Actual PO Quantity")
 
-        df = pd.concat([fagg, aagg], axis=1).fillna(0)
+        df = pd.concat([fagg, aagg, aagg_ord], axis=1).fillna(0)
         df["fill_rate"] = np.where(df["forecast_qty"] > 0, df["confirmed_qty"] / df["forecast_qty"], np.nan)
         df["forecast_vs_actual_ratio"] = np.where(df["forecast_qty"] > 0, df["confirmed_qty"] / df["forecast_qty"], np.nan)
         return df.sort_index()
@@ -192,12 +193,24 @@ class RootCauseService:
             causes.add("incorrect_supplier_shipment")
         if issue_types.isin(["INSUFFICIENT_ORDER_QUANTITY", "VENDOR_ORDER_PLACED_LATE", "MULTIPLE_SUPPLY_CHAIN_ISSUES"]).any() or totals["supplier_ordered_qty"] < totals["supplier_forecast_qty"]:
             causes.add("buyer_supplier_order_issue")
+            
+        supplier_monthly = []
+        if "expected_receipt_date" in matches.columns:
+            matches["month"] = pd.to_datetime(matches["expected_receipt_date"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+            matches["month_str"] = matches["month"].dt.strftime("%Y-%m-%d")
+            # supplier fulfilled quantity and po actual quantity
+            s_agg_received = matches.groupby("month_str")["supplier_received_qty_as_of_ack"].sum().rename("supplier_fulfilled_qty")
+            s_agg_ordered = matches.groupby("month_str")["supplier_ordered_qty"].sum().rename("supplier_ordered_qty")
+            s_df = pd.concat([s_agg_received, s_agg_ordered], axis=1).fillna(0).sort_index().tail(3)
+            supplier_monthly = [{"month": k, **v} for k, v in s_df.to_dict(orient="index").items()]
+
         return {
             "supplier_po_match": True,
             "supplier_po_count": int(len(matches)),
             "supplier_causes": sorted(causes),
             "supplier_issue_types": sorted(issue_types.unique().tolist()),
             "supplier_receipt_cutoff_dates": sorted(matches["acknowledgement_date"].dropna().dt.strftime("%Y-%m-%d").unique().tolist()) if "acknowledgement_date" in matches else [],
+            "supplier_monthly": supplier_monthly,
             **totals,
         }
 
@@ -308,26 +321,27 @@ class RootCauseService:
 
         po_month_index = pd.DatetimeIndex(po_months).sort_values()
         forecast_for_po_month = float(df_monthly.reindex(po_month_index, fill_value=0)["forecast_qty"].sum())
-        evidence = {
-            "purchase_order_qty": purchase_order_qty,
-            "forecast_for_purchase_order_month": forecast_for_po_month,
-            "purchase_order_months": [str(month.date()) for month in po_month_index],
-        }
-        if forecast_for_po_month >= purchase_order_qty:
-            return {"available": True, "result": "no_forecast_issue", "rule": "forecast_meets_or_exceeds_purchase_order", **evidence}
-
+        
         window_end = po_month_index.max()
         window_start = window_end - pd.DateOffset(months=2)
         recent = df_monthly.loc[window_start:window_end]
-        last_three_shipments = float(recent["confirmed_qty"].sum())
         last_three_forecast = float(recent["forecast_qty"].sum())
-        evidence.update(
-            {
-                "last_three_month_shipments": last_three_shipments,
-                "last_three_month_forecast": last_three_forecast,
-                "months_compared": int(len(recent)),
-            }
-        )
+        last_three_shipments = float(recent["confirmed_qty"].sum())
+        last_three_actual_po_qty = pd.to_numeric(prod_a["ordered_qty"], errors="coerce").fillna(0).tail(3)
+
+        evidence = {
+            "purchase_order_qty": purchase_order_qty,
+            "forecast_for_purchase_order_month": forecast_for_po_month,
+            "last_three_month_forecast": last_three_forecast,
+            "last_three_month_shipments": last_three_shipments,
+            "purchase_order_months": [str(month.date()) for month in po_month_index],
+            "months_compared": int(len(recent)),
+            "last_three_actual_po_qty" : last_three_actual_po_qty,
+        }
+        
+        if forecast_for_po_month >= purchase_order_qty or last_three_forecast >= purchase_order_qty:
+            return {"available": True, "result": "no_forecast_issue", "rule": "forecast_meets_or_exceeds_purchase_order", **evidence}
+
         # Forecast below the PO is always a coverage gap.  The shipment check
         # distinguishes a demonstrated historic under-forecast from a gap
         # whose shipment history has not yet exceeded forecast.
@@ -347,11 +361,16 @@ class RootCauseService:
                     "evidence": forecast_check,
                 }
             )
+        else:
+            conclusions.append({"cause": "missing_forecast_data", "confidence": "high", "evidence": {}})
 
         # Supplier PO data identifies whether the shortage originated with
         # supplier execution or the buyer's supplier-order decision.
-        for cause in supplier_po_info.get("supplier_causes", []):
-            conclusions.append({"cause": cause, "confidence": "high", "evidence": supplier_po_info})
+        if supplier_po_info.get("supplier_po_match"):
+            for cause in supplier_po_info.get("supplier_causes", []):
+                conclusions.append({"cause": cause, "confidence": "high", "evidence": supplier_po_info})
+        else:
+            conclusions.append({"cause": "missing_supplier_data", "confidence": "high", "evidence": {}})
 
         # Demand spike
         if spike_info.get("spike"):
@@ -369,7 +388,9 @@ class RootCauseService:
             if inventory_info["po_shortfall_qty"] > 0 and inventory_info["supply_available"] <= 0:
                 conclusions.append({"cause": "available_supply_depleted", "confidence": "high", "evidence": inventory_info})
             elif inventory_info["uncovered_shortfall_qty"] > 0:
-                conclusions.append({"cause": "inventory_insufficient_for_po_shortfall", "confidence": "high", "evidence": inventory_info})
+                conclusions.append({"cause": "inventory_insufficient_for_po_shortfall", "confidence": "medium", "evidence": inventory_info})
+        else:
+            conclusions.append({"cause": "missing_inventory_data", "confidence": "high", "evidence": {}})
 
         # forecast missing
         if df_monthly["forecast_qty"].sum() == 0 and df_monthly["confirmed_qty"].sum() > 0:
@@ -412,7 +433,7 @@ class RootCauseService:
             overall_fill_rate = float(total_confirmed / total_forecast) if total_forecast > 0 else float("nan")
             report["summary"] = {"total_forecast": total_forecast, "total_confirmed": total_confirmed, "overall_fill_rate": overall_fill_rate}
 
-            report["evidence"].append({"monthly_sample": df_monthly.tail(6).reset_index().to_dict(orient="records")})
+            report["evidence"].append({"monthly_sample": df_monthly.reset_index().to_dict(orient="records")})
             forecast_check = self._forecast_po_check(df_monthly, prod_a)
             if forecast_check.get("available"):
                 report["summary"]["purchase_order_qty"] = forecast_check["purchase_order_qty"]
