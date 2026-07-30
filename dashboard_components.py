@@ -25,26 +25,71 @@ except ImportError:
 
 def load_app_style(theme: str = "dark") -> None:
     is_light = theme.lower() == "light"
-    page_bg = "#f7f9fc" if is_light else "#09112b"
-    text_color = "#1f2937" if is_light else "#e6edf7"
-    card_bg = "rgba(255, 255, 255, 0.92)" if is_light else "rgba(255, 255, 255, 0.05)"
-    border_color = "rgba(15, 23, 42, 0.12)" if is_light else "rgba(255, 255, 255, 0.1)"
-    secondary_text = "#4b5563" if is_light else "#a6b8d9"
-    explore_button_bg = "#0a84ff" if is_light else "#0d4b9f"
+    is_lightning = theme.lower() == "lightning"
+
+    if is_lightning:
+        page_bg = "#10151c"
+        text_color = "#ffffff"
+        card_bg = "#171d27"
+        border_color = "rgba(0, 255, 255, 0.2)"
+        secondary_text = "#a0aab8"
+        explore_button_bg = "#00ffff"
+        neon_shadow = "box-shadow: 0 0 10px rgba(0, 255, 255, 0.2);"
+        grid_bg = """
+            background-image: 
+                radial-gradient(circle at top left, rgba(0, 255, 255, 0.25) 0%, transparent 50%),
+                linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 100% 100%, 30px 30px, 30px 30px;
+            background-attachment: fixed;
+        """
+        font_family = "'Inter', 'Roboto', sans-serif"
+    else:
+        page_bg = "#f7f9fc" if is_light else "#09112b"
+        text_color = "#1f2937" if is_light else "#e6edf7"
+        card_bg = "rgba(255, 255, 255, 0.92)" if is_light else "rgba(255, 255, 255, 0.05)"
+        border_color = "rgba(15, 23, 42, 0.12)" if is_light else "rgba(255, 255, 255, 0.1)"
+        secondary_text = "#4b5563" if is_light else "#a6b8d9"
+        explore_button_bg = "#0a84ff" if is_light else "#0d4b9f"
+        neon_shadow = ""
+        grid_bg = ""
+        font_family = "sans-serif"
     st.markdown(
         f"""
         <style>
         .stApp {{
             background: {page_bg};
             color: {text_color};
+            font-family: {font_family};
+            {grid_bg}
+        }}
+        [data-testid="stHeader"] {{
+            background: transparent !important;
+        }}
+        [data-testid="stSidebar"] {{
+            background: {card_bg} !important;
+        }}
+        [data-testid="stSidebar"] p, 
+        [data-testid="stSidebar"] label, 
+        [data-testid="stSidebar"] span, 
+        [data-testid="stSidebar"] h1, 
+        [data-testid="stSidebar"] h2, 
+        [data-testid="stSidebar"] h3 {{
+            color: {text_color} !important;
         }}
         .kpi-card {{
             background: {card_bg};
             border: 1px solid {border_color};
-            border-radius: 18px;
+            border-radius: 12px;
             padding: 18px 20px;
             margin-bottom: 16px;
             min-height: 130px;
+            {neon_shadow}
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }}
+        .kpi-card:hover {{
+            transform: scale(1.02);
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.4);
         }}
         .kpi-card-title {{
             color: {secondary_text};
@@ -71,9 +116,46 @@ def load_app_style(theme: str = "dark") -> None:
         .section-header {{
             font-size: 1.25rem;
             font-weight: 700;
-            color: {text_color};
+            color: {'#00ffff' if is_lightning else text_color};
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
             margin-top: 24px;
-            margin-bottom: 12px;
+            margin-bottom: 16px;
+        }}
+        .stButton > button {{
+            background: {card_bg};
+            color: {text_color};
+            border: 1px solid {border_color};
+        }}
+        .stButton > button:hover {{
+            border-color: {explore_button_bg};
+            color: {explore_button_bg};
+        }}
+        [data-testid="stDownloadButton"] > button {{
+            background: {card_bg} !important;
+            color: {text_color} !important;
+            border: 1px solid {border_color} !important;
+        }}
+        [data-testid="stDownloadButton"] > button:hover {{
+            border-color: {explore_button_bg} !important;
+            color: {explore_button_bg} !important;
+        }}
+        [data-testid="stExpander"] {{
+            background: {card_bg} !important;
+            border: 1px solid {border_color} !important;
+            border-radius: 8px !important;
+        }}
+        [data-testid="stExpander"] summary {{
+            background: {card_bg} !important;
+        }}
+        [data-testid="stExpanderDetails"] {{
+            background: {card_bg} !important;
+        }}
+        [data-testid="stExpander"] summary p {{
+            color: {text_color} !important;
+        }}
+        [data-testid="stExpander"] summary:hover p {{
+            color: {explore_button_bg} !important;
         }}
         .section-subheader {{
             color: {secondary_text};
@@ -367,12 +449,29 @@ def render_aggrid_table(
                     if col in df.columns:
                         options.configure_column(col, valueFormatter=percentage_formatter)
 
+                is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
+                custom_css = {}
+                if is_lightning:
+                    custom_css = {
+                        ".ag-root-wrapper": {"background-color": "#171d27", "border": "1px solid rgba(0, 255, 255, 0.2)"},
+                        ".ag-header": {"background-color": "#10151c", "color": "#ffffff", "border-bottom": "1px solid rgba(0, 255, 255, 0.2)"},
+                        ".ag-row": {"background-color": "#171d27", "color": "#ffffff", "border-bottom": "1px solid rgba(0, 255, 255, 0.1)"},
+                        ".ag-row-hover": {"background-color": "rgba(0, 255, 255, 0.1) !important"},
+                        ".ag-row-selected": {"background-color": "#005555 !important"},
+                        ".ag-row-selected::before": {"background-color": "#005555 !important"},
+                        ".ag-cell": {"color": "#ffffff"},
+                        ".ag-body-viewport": {"background-color": "#171d27 !important"},
+                        ".ag-center-cols-viewport": {"background-color": "#171d27 !important"},
+                        ".ag-paging-panel": {"background-color": "#10151c !important", "color": "#ffffff !important", "border-top": "1px solid rgba(0, 255, 255, 0.2)"},
+                    }
+
                 response = AgGrid(
                     df,
                     height=height,
                     gridOptions=options.build(),
                     update_mode=GridUpdateMode.SELECTION_CHANGED if return_selection else GridUpdateMode.NO_UPDATE,
                     allow_unsafe_jscode=True,
+                    custom_css=custom_css,
                     key=f"aggrid_{fingerprint}",
                 )
                 if return_selection and response and "selected_rows" in response:
@@ -392,25 +491,62 @@ def download_dataframe(df: pd.DataFrame, label: str = "Download CSV") -> None:
     st.download_button(label, csv_buffer, file_name=f"{label.replace(' ', '_').lower()}.csv", mime="text/csv")
 
 
-def plot_line_chart(df: pd.DataFrame, x: str, y: str, color: Optional[str] = None, title: Optional[str] = None) -> None:
+def plot_line_chart(df: pd.DataFrame, x: str, y: str, color: Optional[str] = None, title: Optional[str] = None, is_percentage: bool = False) -> None:
     if df.empty:
         st.info("No data available for this chart.")
         return
-    fig = px.line(prepare_calendar_data(df, x=x), x=x, y=y, color=color, title=title, template="plotly_dark")
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, width="stretch")
+    is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
+    color_seq = ["#00ffff"] if is_lightning and not color else None
+    
+    template = "plotly_dark" if is_lightning else None
+    
+    if is_percentage:
+        df = df.copy()
+        df[y] = df[y].round(1)
+        fig = px.line(prepare_calendar_data(df, x=x), x=x, y=y, color=color, title=title, template=template, color_discrete_sequence=color_seq, text=y)
+        fig.update_traces(texttemplate='%{text}%', textposition="top center")
+        fig.update_yaxes(ticksuffix="%")
+    else:
+        fig = px.line(prepare_calendar_data(df, x=x), x=x, y=y, color=color, title=title, template=template, color_discrete_sequence=color_seq)
+    
+    if is_lightning:
+        if not color:
+            fig.update_traces(fill='tozeroy', fillcolor='rgba(0, 255, 255, 0.1)', line=dict(color="#00ffff"))
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+        
+    if is_lightning:
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
+    else:
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(fig, width="stretch", theme=None if is_lightning else "streamlit")
 
 
 def plot_bar_chart(df: pd.DataFrame, x: str, y: str, color: Optional[str] = None, title: Optional[str] = None) -> None:
     if df.empty:
         st.info("No data available for this chart.")
         return
-    fig = px.bar(prepare_calendar_data(df, x=x), x=x, y=y, color=color, title=title, template="plotly_dark")
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, width="stretch")
+    is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
+    color_seq = ["#00ffff"] if is_lightning and not color else None
+    
+    template = "plotly_dark" if is_lightning else None
+    fig = px.bar(prepare_calendar_data(df, x=x), x=x, y=y, color=color, title=title, template=template, color_discrete_sequence=color_seq)
+    
+    if is_lightning:
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+        
+    if is_lightning:
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
+    else:
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(fig, width="stretch", theme=None if is_lightning else "streamlit")
 
 
 def plot_gauge(value: float, title: str, subtitle: Optional[str] = None) -> None:
+    is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
+    bar_color = "#00ffff" if is_lightning else "#0dbd8b"
+    
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number+delta",
@@ -419,7 +555,7 @@ def plot_gauge(value: float, title: str, subtitle: Optional[str] = None) -> None
             delta={"reference": 100 if value <= 1 else 0, "relative": False},
             gauge={
                 "axis": {"range": [0, 100] if value <= 1 else [0, value * 1.5]},
-                "bar": {"color": "#0dbd8b"},
+                "bar": {"color": bar_color},
                 "steps": [
                     {"range": [0, 50], "color": "#962d3e"},
                     {"range": [50, 80], "color": "#f4b400"},
@@ -429,8 +565,14 @@ def plot_gauge(value: float, title: str, subtitle: Optional[str] = None) -> None
             title={"text": title if not subtitle else f"{title}<br><span style='font-size:0.75em;color:#c0c9d9'>{subtitle}</span>"},
         )
     )
-    fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
-    st.plotly_chart(fig, width="stretch")
+    
+    if is_lightning:
+        fig.layout.template = "plotly_dark"
+        fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
+    else:
+        fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), paper_bgcolor="rgba(0,0,0,0)")
+        
+    st.plotly_chart(fig, width="stretch", theme=None if is_lightning else "streamlit")
 
 
 def render_markdown_card(title: str, subtitle: str, value: str) -> None:

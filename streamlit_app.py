@@ -23,7 +23,7 @@ from dashboard_components import (
 from mcp_client import SupplyChainMCPClient
 
 
-APP_TITLE = "SupplyChain Control Tower"
+APP_TITLE = "SupplyChain Agent"
 MENU_ITEMS = [
     "Dashboard",
     "Forecast Analysis",
@@ -253,8 +253,9 @@ def compute_kpis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChai
 
 
 def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChainMCPClient) -> None:
-    st.markdown("# Executive Dashboard")
-    st.markdown("Modern enterprise metrics for supply chain control and investigation.")
+    st.markdown("# Supply Chain Dashboard")
+    st.markdown("Checks every purchase order for cuts, flags what's at risk, and shows the full reasoning behind every decision..")
+    st.markdown("Aggregate across every vendor, product, and PO in scope.", text_alignment = 'right')
 
     metrics = compute_kpis(forecasts, acks, client)
     cards = []
@@ -268,13 +269,18 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
     st.markdown("---")
     row1, row2 = st.columns([1.5, 1.5])
     with row1:
-        st.subheader("Forecast vs Actual")
+        st.subheader("Forecast Accuracy (%)")
         df_fva = client.forecast_vs_actual()
         if not df_fva.empty:
-            plot_line_chart(df_fva, x="month", y="forecast_qty", color=None, title="Forecasted Quantity")
-            plot_line_chart(df_fva, x="month", y="actual_qty", color=None, title="Confirmed Quantity")
+            df_fva = df_fva[df_fva["forecast_qty"] > 0].copy()
+            if not df_fva.empty:
+                df_fva["accuracy"] = (1 - (df_fva["forecast_qty"] - df_fva["actual_qty"]).abs() / df_fva["forecast_qty"]) * 100
+                df_fva["accuracy"] = df_fva["accuracy"].clip(lower=0, upper=100)
+                plot_line_chart(df_fva, x="month", y="accuracy", color=None, title="Forecast Accuracy (%)")
+            else:
+                st.info("No non-zero forecast data available to compute accuracy.")
         else:
-            st.info("Forecast vs actual data is not available.")
+            st.info("Forecast accuracy data is not available.")
     with row2:
         st.subheader("Fill Rate Gauge")
         if metrics["Fill Rate"]["value"]:
@@ -283,9 +289,20 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
         else:
             st.info("Fill rate is unavailable.")
 
+    if not acks.empty:
+        df_acks = acks.copy()
+        df_acks["month"] = pd.to_datetime(df_acks["delivery_date"], errors="coerce").dt.strftime("%Y-%m")
+        df_acks = df_acks.dropna(subset=["month"])
+        grouped = df_acks.groupby("month")[["ordered_qty", "confirmed_qty"]].sum().reset_index()
+        grouped["fill_rate_pct"] = (grouped["confirmed_qty"] / grouped["ordered_qty"] * 100).fillna(0)
+        
+        st.markdown("---")
+        st.subheader("Fill Rate Trend")
+        plot_line_chart(grouped, x="month", y="fill_rate_pct", color=None, title="Fill Rate Trend (%)", is_percentage=True)
+
     st.markdown("---")
     st.subheader("Top Risk Products")
-    risk_products = client.get_top_risk_products(10, acknowledgements=acks)
+    risk_products = client.get_top_risk_products(None, acknowledgements=acks)
     if not risk_products.empty:
         selected_rows = render_aggrid_table(risk_products, return_selection=True)
         
@@ -294,7 +311,7 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
             product_name = selected_product.get("Product Description", selected_product.get("vendor_sku", "Unknown Product"))
             sku = selected_product.get("vendor_sku")
             
-            with st.expander(f"Product Issue Analysis: {product_name}", expanded=True):
+            with st.expander(f"Product Issue Analysis: {product_name} - {sku}", expanded=True):
                 st.markdown("## Findings")
                 st.markdown(f"**Item / Location review · Snapshot {pd.Timestamp.now().strftime('%Y-%m-%d')}**")
                 
@@ -375,9 +392,23 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                                 if not df_monthly.empty:
                                     df_monthly["month"] = pd.to_datetime(df_monthly["month"]).dt.strftime("%b %Y")
                                     df_monthly = df_monthly.rename(columns={"forecast_qty": "Forecast"})
+                                    is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
+                                    template = "plotly_dark" if is_lightning else None
+                                    color_seq = ["#00ffff", "#0dbd8b"] if is_lightning else None
+                                    
                                     fig = px.bar(df_monthly, x="month", y=["Forecast", "Actual PO Quantity"], barmode="group",
-                                                 title="Forecast vs Actual PO", labels={"value": "Quantity", "variable": "Metric"})
-                                    st.plotly_chart(fig, use_container_width=True)
+                                                 title="Forecast vs Actual PO", labels={"value": "Quantity", "variable": "Metric"},
+                                                 template=template, color_discrete_sequence=color_seq)
+                                    
+                                    if is_lightning:
+                                        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+                                        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+                                        
+                                    if is_lightning:
+                                        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
+                                    else:
+                                        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                                    st.plotly_chart(fig, use_container_width=True, theme=None if is_lightning else "streamlit")
 
                         if missing_forecast:
                             st.info("No supporting data found.")
@@ -415,9 +446,23 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                                         df = df.sort_values(by="month")
                                         df["month_label"] = pd.to_datetime(df["month"]).dt.strftime("%b %Y")
                                         df = df.rename(columns={"supplier_fulfilled_qty": "Supplier Fulfilled"})
+                                        is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
+                                        template = "plotly_dark" if is_lightning else None
+                                        color_seq = ["#00ffff", "#0dbd8b"] if is_lightning else None
+                                        
                                         fig = px.bar(df, x="month_label", y=["Supplier Fulfilled", "Actual PO Quantity"], barmode="group",
-                                                     title="Supplier Fulfilled vs Vendor PO Ordered", labels={"value": "Quantity", "variable": "Metric"})
-                                        st.plotly_chart(fig, use_container_width=True)
+                                                     title="Supplier Fulfilled vs Vendor PO Ordered", labels={"value": "Quantity", "variable": "Metric"},
+                                                     template=template, color_discrete_sequence=color_seq)
+                                        
+                                        if is_lightning:
+                                            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+                                            fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+                                            
+                                        if is_lightning:
+                                            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
+                                        else:
+                                            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                                        st.plotly_chart(fig, use_container_width=True, theme=None if is_lightning else "streamlit")
 
                         if missing_supplier:
                             st.info("No supporting data found.")
@@ -444,9 +489,23 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                                         df_inv = df_inv.rename(columns={"inventory_qty": "Inventory"})
                                     else:
                                         df_inv["Inventory"] = inventory_evidence.get("qty_available", 0)
+                                    is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
+                                    template = "plotly_dark" if is_lightning else None
+                                    color_seq = ["#00ffff", "#0dbd8b"] if is_lightning else None
+                                    
                                     fig = px.bar(df_inv, x="month", y=["Inventory", "Actual PO Quantity"], barmode="group",
-                                                 title="Inventory vs PO Ordered", labels={"value": "Quantity", "variable": "Metric"})
-                                    st.plotly_chart(fig, use_container_width=True)
+                                                 title="Inventory vs PO Ordered", labels={"value": "Quantity", "variable": "Metric"},
+                                                 template=template, color_discrete_sequence=color_seq)
+                                    
+                                    if is_lightning:
+                                        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+                                        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255, 255, 255, 0.05)')
+                                        
+                                    if is_lightning:
+                                        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#ffffff")
+                                    else:
+                                        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                                    st.plotly_chart(fig, use_container_width=True, theme=None if is_lightning else "streamlit")
 
                         if missing_inventory:
                             st.info("No supporting data found.")
@@ -749,17 +808,17 @@ def page_settings(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCha
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon="📊")
     if "theme" not in st.session_state:
-        st.session_state.theme = "light"
+        st.session_state.theme = "lightning"
     st.sidebar.title(APP_TITLE)
     st.sidebar.markdown("### Theme")
     if "theme" not in st.session_state:
-        st.session_state.theme = "light"
+        st.session_state.theme = "lightning"
 
     st.sidebar.radio(
 
     "Dashboard Theme",
 
-    ["dark", "light"],
+    ["dark", "light", "lightning"],
 
     key="theme",
 

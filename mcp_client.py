@@ -289,7 +289,7 @@ class SupplyChainMCPClient:
         timeline = timeline.sort_values("month").fillna(0)
         return timeline
 
-    def get_top_risk_products(self, top_n: int = 10, acknowledgements: pd.DataFrame | None = None) -> pd.DataFrame:
+    def get_top_risk_products(self, top_n: int | None = 10, acknowledgements: pd.DataFrame | None = None) -> pd.DataFrame:
         df = acknowledgements.copy() if acknowledgements is not None else self.ack_df.copy()
         if df.empty or "vendor_sku" not in df.columns:
             return pd.DataFrame()
@@ -313,7 +313,9 @@ class SupplyChainMCPClient:
             axis=1,
         )
         summary["risk_score"] = (1.0 - summary["fill_rate"]).clip(lower=0.0)
-        summary = summary.sort_values(by=["risk_score", "backorder_qty"], ascending=[False, False]).head(top_n)
+        summary = summary.sort_values(by=["risk_score", "backorder_qty"], ascending=[False, False])
+        if top_n is not None:
+            summary = summary.head(top_n)
         return summary
 
     def search_inventory_snapshot(self, query: str) -> pd.DataFrame:

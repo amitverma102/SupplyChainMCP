@@ -1,16 +1,12 @@
-import pandas as pd
 from mcp_client import SupplyChainMCPClient
-import asyncio
+import pandas as pd
 
-async def test():
-    c = SupplyChainMCPClient()
-    a = c.ack_df
-    # Mocking the UI date filter: May 2026
-    selected_acks = a[(a["delivery_date"] >= "2026-05-01") & (a["delivery_date"] <= "2026-05-31")]
-    report = c.root_cause_analysis("1000127", acknowledgements=selected_acks)
-    
-    monthly_sample = next((e["monthly_sample"] for e in report.get("evidence", []) if "monthly_sample" in e), [])
-    df = pd.DataFrame(monthly_sample)
-    print(df[["month", "inventory_qty", "Actual PO Quantity"]])
+client = SupplyChainMCPClient()
+acks = client.load_acknowledgements()
 
-asyncio.run(test())
+if not acks.empty:
+    df = acks.copy()
+    df["month"] = pd.to_datetime(df["delivery_date"]).dt.strftime("%Y-%m")
+    grouped = df.groupby("month")[["ordered_qty", "confirmed_qty"]].sum().reset_index()
+    grouped["fill_rate_pct"] = (grouped["confirmed_qty"] / grouped["ordered_qty"] * 100).fillna(0)
+    print(grouped.head())
