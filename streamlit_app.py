@@ -259,7 +259,7 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
     metrics = compute_kpis(forecasts, acks, client)
     cards = []
     for label, payload in metrics.items():
-        cards.append({"label": label, **payload, "action": "Explore", "target": "Forecast Analysis"})
+        cards.append({"label": label, **payload})
     selected = render_kpi_cards(cards, columns=4)
     if selected:
         st.session_state.page = selected
