@@ -134,7 +134,12 @@ def parse_date_filters(filters: dict[str, list[str]], forecasts: pd.DataFrame, a
         if isinstance(dates, (tuple, list)) and len(dates) == 2:
             start_date, end_date = dates
             if not pd.isna(start_date) and not pd.isna(end_date):
-                if "ack_date" in acks.columns:
+                if "delivery_date" in acks.columns:
+                    acks = acks[
+                        (pd.to_datetime(acks["delivery_date"], errors="coerce") >= pd.to_datetime(start_date))
+                        & (pd.to_datetime(acks["delivery_date"], errors="coerce") <= pd.to_datetime(end_date))
+                    ]
+                elif "ack_date" in acks.columns:
                     acks = acks[
                         (pd.to_datetime(acks["ack_date"], errors="coerce") >= pd.to_datetime(start_date))
                         & (pd.to_datetime(acks["ack_date"], errors="coerce") <= pd.to_datetime(end_date))
@@ -143,11 +148,6 @@ def parse_date_filters(filters: dict[str, list[str]], forecasts: pd.DataFrame, a
                     acks = acks[
                         (pd.to_datetime(acks["po_date"], errors="coerce") >= pd.to_datetime(start_date))
                         & (pd.to_datetime(acks["po_date"], errors="coerce") <= pd.to_datetime(end_date))
-                    ]
-                elif "delivery_date" in acks.columns:
-                    acks = acks[
-                        (pd.to_datetime(acks["delivery_date"], errors="coerce") >= pd.to_datetime(start_date))
-                        & (pd.to_datetime(acks["delivery_date"], errors="coerce") <= pd.to_datetime(end_date))
                     ]
     return forecasts, acks
 
@@ -198,7 +198,7 @@ def render_root_cause_report(report: dict[str, Any], show_confidence: bool = Tru
 
     conclusions = report.get("conclusions", [])
     if conclusions:
-        st.subheader("Findings")
+        st.subheader("Findings (Analysis Window - 3 Months)")
         for conclusion in conclusions:
             cause = _display_label(conclusion.get("cause", "unknown"))
             confidence = conclusion.get("confidence", "unknown").title()
@@ -244,7 +244,7 @@ def compute_kpis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChai
         "Forecast Value": {"value": f"{metrics['forecast_value']:,.0f}", "delta": "", "detail": "Total forecast value"},
         "Ordered Quantity": {"value": f"{metrics['ordered_quantity']:,.0f}", "delta": "", "detail": "Total ordered units"},
         "Confirmed Quantity": {"value": f"{metrics['confirmed_quantity']:,.0f}", "delta": "", "detail": "Total confirmed units"},
-        "Fill Rate": {"value": f"{metrics['fill_rate'] * 100:.1f}%", "delta": "", "detail": "Confirmed / ordered"},
+        "Fill Rate": {"value": f"{metrics['fill_rate'] * 100:.2f}%", "delta": "", "detail": "Confirmed / ordered"},
         "Forecast Accuracy": {"value": f"{metrics.get('forecast_accuracy', 0.0) * 100:.1f}%", "delta": "", "detail": "MAPE"},
         "WMAPE": {"value": f"{metrics.get('wmape', 0.0) * 100:.1f}%", "delta": "", "detail": "Weighted MAPE"},
         "Products Short": {"value": f"{int(metrics['products_short']):,}", "delta": "", "detail": "Unique SKUs with short supply"},
@@ -360,7 +360,7 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                             return df.tail(3)
                         df["_temp_dt"] = pd.to_datetime(df[date_col])
                         max_po = pd.to_datetime(max(po_months))
-                        min_po = max_po - pd.DateOffset(months=2)
+                        min_po = pd.to_datetime(min(po_months)) - pd.DateOffset(months=2)
                         filtered = df[(df["_temp_dt"] >= min_po) & (df["_temp_dt"] <= max_po)].copy()
                         if filtered.empty:
                             return df.tail(3)
@@ -411,7 +411,8 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                                     if not df_s.empty and not df_m.empty:
                                         df_s["month"] = pd.to_datetime(df_s["month"]).dt.strftime("%Y-%m")
                                         df_m["month"] = pd.to_datetime(df_m["month"]).dt.strftime("%Y-%m")
-                                        df = pd.merge(df_m, df_s, on="month", how="left").fillna(0)
+                                        df = pd.merge(df_m, df_s, on="month", how="outer").fillna(0)
+                                        df = df.sort_values(by="month")
                                         df["month_label"] = pd.to_datetime(df["month"]).dt.strftime("%b %Y")
                                         df = df.rename(columns={"supplier_fulfilled_qty": "Supplier Fulfilled"})
                                         fig = px.bar(df, x="month_label", y=["Supplier Fulfilled", "Actual PO Quantity"], barmode="group",
@@ -439,9 +440,10 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                                 df_inv = filter_last_3_po_months(df_inv)
                                 if not df_inv.empty:
                                     df_inv["month"] = pd.to_datetime(df_inv["month"]).dt.strftime("%b %Y")
-                                    # Inventory is a snapshot, duplicate across the 3 months for charting
-                                    df_inv["inventory_qty"] = inventory_evidence.get("qty_available", 0)
-                                    df_inv = df_inv.rename(columns={"inventory_qty": "Inventory"})
+                                    if "inventory_qty" in df_inv.columns:
+                                        df_inv = df_inv.rename(columns={"inventory_qty": "Inventory"})
+                                    else:
+                                        df_inv["Inventory"] = inventory_evidence.get("qty_available", 0)
                                     fig = px.bar(df_inv, x="month", y=["Inventory", "Actual PO Quantity"], barmode="group",
                                                  title="Inventory vs PO Ordered", labels={"value": "Quantity", "variable": "Metric"})
                                     st.plotly_chart(fig, use_container_width=True)
@@ -709,7 +711,7 @@ def generate_copilot_response(question: str, forecasts: pd.DataFrame, acks: pd.D
         vendor_report = client.get_vendor_performance()
         rows = vendor_report[vendor_report["vendor"].str.contains(vendor, case=False, na=False)]
         if not rows.empty:
-            return f"Vendor {vendor} has an average fill rate of {rows['fill_rate'].mean():.1%}. Review the top 10 POs for late confirmations."
+            return f"Vendor {vendor} has an average fill rate of {rows['fill_rate'].mean():.2%}. Review the top 10 POs for late confirmations."
     return "I am reviewing supply and forecast data. Please narrow the question to a product, PO number, or vendor." 
 
 

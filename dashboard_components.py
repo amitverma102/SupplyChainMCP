@@ -11,6 +11,7 @@ import streamlit as st
 
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+    from st_aggrid.shared import JsCode
     ST_AGGRID_AVAILABLE = True
 except ImportError:
     ST_AGGRID_AVAILABLE = False
@@ -353,6 +354,19 @@ def render_aggrid_table(
                 options.configure_grid_options(domLayout="normal")
                 if fit_columns:
                     options.configure_column("", flex=1)
+                
+                percentage_formatter = JsCode("""
+                function(params) {
+                    if (params.value == null || isNaN(params.value)) {
+                        return params.value;
+                    }
+                    return (params.value * 100).toFixed(2) + '%';
+                }
+                """)
+                for col in ["fill_rate", "risk_score"]:
+                    if col in df.columns:
+                        options.configure_column(col, valueFormatter=percentage_formatter)
+
                 response = AgGrid(
                     df,
                     height=height,

@@ -44,40 +44,52 @@ class InventoryService:
         if not files:
             return pd.DataFrame(columns=["vendor_sku", "qty_available", "supplier_po_qty", "inventory_snapshot_date"])
 
-        path = files[-1]
-        if path.suffix.lower() == ".csv":
-            raw = None
-            for encoding in ("utf-8-sig", "cp1252", "latin-1"):
-                try:
-                    raw = pd.read_csv(path, encoding=encoding, dtype={self.SKU_COLUMN: "string"})
-                    break
-                except UnicodeDecodeError:
+        all_inventories = []
+        for path in files:
+            if path.suffix.lower() == ".csv":
+                raw = None
+                for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+                    try:
+                        raw = pd.read_csv(path, encoding=encoding, dtype={self.SKU_COLUMN: "string"})
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                if raw is None:
                     continue
-            if raw is None:
-                return pd.DataFrame()
-        else:
-            raw = pd.read_excel(path, dtype={self.SKU_COLUMN: "string"})
+            else:
+                raw = pd.read_excel(path, dtype={self.SKU_COLUMN: "string"})
 
-        required = {self.SKU_COLUMN, self.SUPPLIER_PO_COLUMN, self.AVAILABLE_COLUMN}
-        if not required.issubset(raw.columns):
-            return pd.DataFrame()
+            required = {self.SKU_COLUMN, self.SUPPLIER_PO_COLUMN, self.AVAILABLE_COLUMN}
+            if not required.issubset(raw.columns):
+                continue
 
-        inventory = pd.DataFrame(
-            {
-                "vendor_sku": raw[self.SKU_COLUMN].astype("string").str.strip(),
-                "qty_available": self._quantity(raw[self.AVAILABLE_COLUMN]),
-                "supplier_po_qty": self._quantity(raw[self.SUPPLIER_PO_COLUMN]),
-                "inventory_snapshot_date": self._snapshot_date(path),
-                "inventory_source_file": path.name,
-            }
-        )
-        if self.DESCRIPTION_COLUMN in raw.columns:
-            inventory["inventory_description"] = raw[self.DESCRIPTION_COLUMN].astype("string").str.strip()
+            inventory = pd.DataFrame(
+                {
+                    "vendor_sku": raw[self.SKU_COLUMN].astype("string").str.strip(),
+                    "qty_available": self._quantity(raw[self.AVAILABLE_COLUMN]),
+                    "supplier_po_qty": self._quantity(raw[self.SUPPLIER_PO_COLUMN]),
+                    "inventory_snapshot_date": self._snapshot_date(path),
+                    "inventory_source_file": path.name,
+                }
+            )
+            if self.DESCRIPTION_COLUMN in raw.columns:
+                inventory["inventory_description"] = raw[self.DESCRIPTION_COLUMN].astype("string").str.strip()
+            
+            all_inventories.append(inventory)
+            
+        if not all_inventories:
+            return pd.DataFrame(columns=["vendor_sku", "qty_available", "supplier_po_qty", "inventory_snapshot_date"])
+
+        inventory = pd.concat(all_inventories, ignore_index=True)
         inventory = inventory[inventory["vendor_sku"].notna() & inventory["vendor_sku"].ne("")]
-        aggregations = {"qty_available": "sum", "supplier_po_qty": "sum", "inventory_snapshot_date": "max", "inventory_source_file": "first"}
+        aggregations = {"qty_available": "sum", "supplier_po_qty": "sum", "inventory_source_file": "first"}
         if "inventory_description" in inventory.columns:
             aggregations["inventory_description"] = "first"
-        return inventory.groupby("vendor_sku", as_index=False).agg(aggregations)
+        
+        # Ensure month is extracted correctly for grouping
+        inventory["inventory_month"] = pd.to_datetime(inventory["inventory_snapshot_date"]).dt.to_period("M").dt.to_timestamp()
+        
+        return inventory.groupby(["vendor_sku", "inventory_month"], as_index=False).agg(aggregations)
 
 
 __all__ = ["InventoryService"]

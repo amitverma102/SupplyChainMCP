@@ -452,7 +452,7 @@ class SupplyChainMCPClient:
         # only the selected date range.
         source_acks = acknowledgements.copy() if acknowledgements is not None else self.ack_df
         acks = source_acks if not source_acks.empty else None
-        root_service = RootCauseService(forecasts, acks, self.inventory_df, self.supplier_po_df)
+        root_service = RootCauseService(forecasts, acks, self.inventory_df, self.supplier_po_df, full_acks=self.ack_df)
         # The root-cause service expands a PO entered in the product search to
         # the acknowledgement line SKUs before evaluating forecast history.
         return root_service.root_cause_analysis(product, vendor, customer, po_number, lookback_months, recent_weeks)

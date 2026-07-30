@@ -18,13 +18,14 @@ class RootCauseService:
     confidence levels and recommended actions.
     """
 
-    def __init__(self, forecasts: Optional[pd.DataFrame], acks: Optional[pd.DataFrame], inventory: Optional[pd.DataFrame] = None, supplier_pos: Optional[pd.DataFrame] = None):
+    def __init__(self, forecasts: Optional[pd.DataFrame], acks: Optional[pd.DataFrame], inventory: Optional[pd.DataFrame] = None, supplier_pos: Optional[pd.DataFrame] = None, full_acks: Optional[pd.DataFrame] = None):
         # forecasts: expected columns include vendor_sku, upc, buyer_part_number,
         # forecast_month_parsed (datetime) or forecast_month, forecast_qty
         # acks: expected columns include vendor_sku, upc, buyer_part_number,
         # ordered_qty, confirmed_qty, delivery_date, po_number
         self.forecasts = forecasts if forecasts is not None else pd.DataFrame()
         self.acks = acks if acks is not None else pd.DataFrame()
+        self.full_acks = full_acks if full_acks is not None else self.acks
         self.inventory = inventory if inventory is not None else pd.DataFrame()
         self.supplier_pos = supplier_pos if supplier_pos is not None else pd.DataFrame()
 
@@ -39,7 +40,7 @@ class RootCauseService:
         f = self.forecasts
         a = self.acks
         if f.empty and a.empty:
-            return pd.DataFrame(), pd.DataFrame()
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         def match(df: pd.DataFrame) -> pd.DataFrame:
             if df.empty:
@@ -50,32 +51,33 @@ class RootCauseService:
                     mask = mask | (df[col].astype(str).fillna("") == str(product))
             return df[mask]
 
-        prod_f = match(f)
-        prod_a = match(a)
-
         po_value = str(po_number if po_number is not None else product).strip()
         if not po_value or "po_number" not in a.columns:
-            return prod_f, prod_a
+            return match(f), match(a), match(self.full_acks)
 
         po_matches = a[a["po_number"].astype("string").str.strip().eq(po_value)]
         if po_matches.empty:
-            return prod_f, prod_a
+            return match(f), match(a), match(self.full_acks)
 
-        # A PO may have several lines.  Retain all of them, then fetch every
-        # related forecast row using the identifiers shared by both feeds.
-        prod_a = pd.concat([prod_a, po_matches]).drop_duplicates()
-        related_forecast_mask = pd.Series(False, index=f.index)
-        for column in ["vendor_sku", "buyer_part_number", "upc"]:
-            if column not in po_matches.columns or column not in f.columns:
-                continue
-            identifiers = po_matches[column].astype("string").str.strip().dropna()
-            identifiers = identifiers[identifiers.ne("")].unique()
-            if len(identifiers):
-                related_forecast_mask |= f[column].astype("string").str.strip().isin(identifiers)
-        if related_forecast_mask.any():
-            prod_f = pd.concat([prod_f, f[related_forecast_mask]]).drop_duplicates()
+        po_skus = set()
+        for col in ["vendor_sku", "upc", "buyer_part_number", "product_id"]:
+            if col in po_matches.columns:
+                po_skus.update(po_matches[col].dropna().astype(str).str.strip())
+        po_skus = {s for s in po_skus if s}
 
-        return prod_f, prod_a
+        if not po_skus:
+            return match(f), match(a), match(self.full_acks)
+
+        def match_by_sku(df: pd.DataFrame) -> pd.DataFrame:
+            if df.empty:
+                return df
+            mask = pd.Series(False, index=df.index)
+            for col in ["vendor_sku", "upc", "buyer_part_number", "product_id"]:
+                if col in df.columns:
+                    mask = mask | df[col].astype(str).fillna("").isin(po_skus)
+            return df[mask]
+
+        return match_by_sku(f), match_by_sku(a), match_by_sku(self.full_acks)
 
     @staticmethod
     def _confidence_summary(conclusions: List[Dict[str, Any]]) -> float:
@@ -84,9 +86,9 @@ class RootCauseService:
         values = [scores.get(str(item.get("confidence", "")).lower(), 0.0) for item in conclusions]
         return float(np.mean(values)) if values else 0.0
 
-    def _monthly_aggregates(self, prod_f: pd.DataFrame, prod_a: pd.DataFrame) -> pd.DataFrame:
-        # create a monthly summary with forecast and actual confirmed_qty
-        if prod_f.empty and prod_a.empty:
+    def _aggregate_monthly(self, prod_f: pd.DataFrame, prod_a: pd.DataFrame, full_prod_a: pd.DataFrame = None) -> pd.DataFrame:
+        """Combine forecast, actual acknowledgements, and full PO history into a monthly timeseries."""
+        if prod_f.empty and prod_a.empty and (full_prod_a is None or full_prod_a.empty):
             return pd.DataFrame()
 
         f = prod_f.copy()
@@ -107,11 +109,31 @@ class RootCauseService:
         else:
             a["month"] = pd.NaT
 
+        fa = full_prod_a if full_prod_a is not None and not full_prod_a.empty else a
+        if "delivery_date" in fa.columns:
+            fa["month"] = pd.to_datetime(fa["delivery_date"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+        else:
+            fa["month"] = pd.NaT
+
         fagg = f.groupby("month", dropna=True)["forecast_qty"].sum().rename("forecast_qty")
         aagg = a.groupby("month", dropna=True)["confirmed_qty"].sum().rename("confirmed_qty")
-        aagg_ord = a.groupby("month", dropna=True)["ordered_qty"].sum().rename("Actual PO Quantity")
+        aagg_ord = fa.groupby("month", dropna=True)["ordered_qty"].sum().rename("Actual PO Quantity")
 
-        df = pd.concat([fagg, aagg, aagg_ord], axis=1).fillna(0)
+        concat_list = [fagg, aagg, aagg_ord]
+
+        if not self.inventory.empty and "vendor_sku" in self.inventory.columns and "inventory_month" in self.inventory.columns:
+            sku_values = set()
+            for frame in (f, a):
+                if "vendor_sku" in frame.columns:
+                    sku_values.update(frame["vendor_sku"].dropna().astype(str).str.strip())
+            if sku_values:
+                inv_matches = self.inventory[self.inventory["vendor_sku"].astype(str).str.strip().isin(sku_values)]
+                if not inv_matches.empty:
+                    inv_agg = inv_matches.groupby("inventory_month", dropna=True)["qty_available"].sum().rename("inventory_qty")
+                    inv_agg.index.name = "month"
+                    concat_list.append(inv_agg)
+
+        df = pd.concat(concat_list, axis=1).fillna(0)
         df["fill_rate"] = np.where(df["forecast_qty"] > 0, df["confirmed_qty"] / df["forecast_qty"], np.nan)
         df["forecast_vs_actual_ratio"] = np.where(df["forecast_qty"] > 0, df["confirmed_qty"] / df["forecast_qty"], np.nan)
         return df.sort_index()
@@ -129,6 +151,17 @@ class RootCauseService:
         if matched.empty:
             return {"inventory_match": False}
 
+        selected_months = set()
+        if not prod_a.empty and "delivery_date" in prod_a.columns:
+            dates = pd.to_datetime(prod_a["delivery_date"], errors="coerce").dt.to_period("M").dropna()
+            selected_months = set(dates)
+            
+        if selected_months:
+            date_col = "inventory_month" if "inventory_month" in matched.columns else "inventory_snapshot_date"
+            if date_col in matched.columns:
+                matched_dates = pd.to_datetime(matched[date_col], errors="coerce").dt.to_period("M")
+                matched = matched[matched_dates.isin(selected_months)].copy()
+
         available = float(pd.to_numeric(matched.get("qty_available", 0), errors="coerce").fillna(0).sum())
         supplier_po = float(pd.to_numeric(matched.get("supplier_po_qty", 0), errors="coerce").fillna(0).sum())
         po_shortfall = 0.0
@@ -143,7 +176,7 @@ class RootCauseService:
             # inventory snapshot, so supplier_po is evidence only.
             "supply_available": max(available, 0.0),
             "uncovered_shortfall_qty": max(po_shortfall - max(available, 0.0), 0.0),
-            "snapshot_date": str(matched["inventory_snapshot_date"].max()) if "inventory_snapshot_date" in matched else None,
+            "snapshot_date": str(matched.get("inventory_month", matched.get("inventory_snapshot_date")).max()) if not matched.empty else None,
         }
 
     def _supplier_po_evidence(self, product: str, prod_f: pd.DataFrame, prod_a: pd.DataFrame) -> Dict[str, Any]:
@@ -322,15 +355,15 @@ class RootCauseService:
         po_month_index = pd.DatetimeIndex(po_months).sort_values()
         forecast_for_po_month = float(df_monthly.reindex(po_month_index, fill_value=0)["forecast_qty"].sum())
         
-        window_end = po_month_index.max()
+        window_end = po_month_index.min()
         window_start = window_end - pd.DateOffset(months=2)
         recent = df_monthly.loc[window_start:window_end]
         last_three_forecast = float(recent["forecast_qty"].sum())
         last_three_shipments = float(recent["confirmed_qty"].sum())
-        last_three_actual_po_qty = pd.to_numeric(prod_a["ordered_qty"], errors="coerce").fillna(0).tail(3)
+        last_three_actual_po_qty = float(recent["Actual PO Quantity"].sum()) if "Actual PO Quantity" in recent.columns else 0.0
 
         evidence = {
-            "purchase_order_qty": purchase_order_qty,
+            "purchase_order_qty": last_three_actual_po_qty,
             "forecast_for_purchase_order_month": forecast_for_po_month,
             "last_three_month_forecast": last_three_forecast,
             "last_three_month_shipments": last_three_shipments,
@@ -339,7 +372,7 @@ class RootCauseService:
             "last_three_actual_po_qty" : last_three_actual_po_qty,
         }
         
-        if forecast_for_po_month >= purchase_order_qty or last_three_forecast >= purchase_order_qty:
+        if last_three_forecast >= last_three_actual_po_qty:
             return {"available": True, "result": "no_forecast_issue", "rule": "forecast_meets_or_exceeds_purchase_order", **evidence}
 
         # Forecast below the PO is always a coverage gap.  The shipment check
@@ -414,13 +447,13 @@ class RootCauseService:
         report: Dict[str, Any] = {"product": product, "summary": {}, "evidence": [], "conclusions": [], "recommendations": []}
 
         try:
-            prod_f, prod_a = self._filter_product(product, po_number)
-            if prod_f.empty and prod_a.empty:
+            prod_f, prod_a, full_prod_a = self._filter_product(product, po_number)
+            if prod_f.empty and prod_a.empty and (full_prod_a is None or full_prod_a.empty):
                 report["conclusions"].append({"cause": "no_data", "confidence": "high"})
                 report["confidence"] = self._confidence_summary(report["conclusions"])
                 return report
 
-            df_monthly = self._monthly_aggregates(prod_f, prod_a)
+            df_monthly = self._aggregate_monthly(prod_f, prod_a, full_prod_a)
 
             # limit lookback
             if not df_monthly.empty and lookback_months is not None:
