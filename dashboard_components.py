@@ -28,16 +28,16 @@ def load_app_style(theme: str = "dark") -> None:
     is_lightning = theme.lower() == "lightning"
 
     if is_lightning:
-        page_bg = "#10151c"
+        page_bg = "#0B0D11"
         text_color = "#ffffff"
         card_bg = "#171d27"
-        border_color = "rgba(0, 255, 255, 0.2)"
+        border_color = "rgba(34, 211, 238, 0.35)"
         secondary_text = "#a0aab8"
         explore_button_bg = "#00ffff"
-        neon_shadow = "box-shadow: 0 0 10px rgba(0, 255, 255, 0.2);"
+        neon_shadow = "box-shadow: 0 0 10px rgba(34, 211, 238, 0.35);"
         grid_bg = """
             background-image: 
-                radial-gradient(circle at top left, rgba(0, 255, 255, 0.25) 0%, transparent 50%),
+                radial-gradient(circle at top left, rgba(34, 211, 238, 0.35) 0%, transparent 50%),
                 linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
                 linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
             background-size: 100% 100%, 30px 30px, 30px 30px;
@@ -159,6 +159,9 @@ def load_app_style(theme: str = "dark") -> None:
         }}
         .section-subheader {{
             color: {secondary_text};
+        }}
+        .stMarkdown p, .stMarkdown li, .stMarkdown span, [data-testid="stMetricLabel"] > div, [data-testid="stMetricValue"] > div, [data-testid="stWidgetLabel"] p {{
+            color: {text_color} !important;
         }}
         .small-button {{
             border-radius: 10px;
@@ -445,9 +448,25 @@ def render_aggrid_table(
                     return (params.value * 100).toFixed(2) + '%';
                 }
                 """)
+                date_formatter = JsCode("""
+                function(params) {
+                    if (params.value == null || params.value === '') {
+                        return params.value;
+                    }
+                    var date = new Date(params.value);
+                    if (!isNaN(date.getTime())) {
+                        return date.toISOString().split('T')[0];
+                    }
+                    return params.value;
+                }
+                """)
                 for col in ["fill_rate", "risk_score"]:
                     if col in df.columns:
                         options.configure_column(col, valueFormatter=percentage_formatter)
+                
+                for col in df.columns:
+                    if pd.api.types.is_datetime64_any_dtype(df[col]) or "date" in col.lower():
+                        options.configure_column(col, valueFormatter=date_formatter)
 
                 is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
                 custom_css = {}

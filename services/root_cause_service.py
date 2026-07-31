@@ -176,7 +176,7 @@ class RootCauseService:
             # inventory snapshot, so supplier_po is evidence only.
             "supply_available": max(available, 0.0),
             "uncovered_shortfall_qty": max(po_shortfall - max(available, 0.0), 0.0),
-            "snapshot_date": str(matched.get("inventory_month", matched.get("inventory_snapshot_date")).max()) if not matched.empty else None,
+            "snapshot_date": pd.to_datetime(matched.get("inventory_month", matched.get("inventory_snapshot_date")).max()).strftime('%Y-%m-%d') if not matched.empty and pd.notnull(matched.get("inventory_month", matched.get("inventory_snapshot_date")).max()) else None,
         }
 
     def _supplier_po_evidence(self, product: str, prod_f: pd.DataFrame, prod_a: pd.DataFrame) -> Dict[str, Any]:
