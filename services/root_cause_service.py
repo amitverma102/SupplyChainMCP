@@ -176,7 +176,7 @@ class RootCauseService:
             # inventory snapshot, so supplier_po is evidence only.
             "supply_available": max(available, 0.0),
             "uncovered_shortfall_qty": max(po_shortfall - max(available, 0.0), 0.0),
-            "snapshot_date": pd.to_datetime(matched.get("inventory_month", matched.get("inventory_snapshot_date")).max()).strftime('%Y-%m-%d') if not matched.empty and pd.notnull(matched.get("inventory_month", matched.get("inventory_snapshot_date")).max()) else None,
+            "snapshot_date": str(matched.get("inventory_month", matched.get("inventory_snapshot_date")).max()) if not matched.empty else None,
         }
 
     def _supplier_po_evidence(self, product: str, prod_f: pd.DataFrame, prod_a: pd.DataFrame) -> Dict[str, Any]:
@@ -473,7 +473,7 @@ class RootCauseService:
                 report["summary"]["forecast_for_purchase_order_month"] = forecast_check["forecast_for_purchase_order_month"]
                 report["evidence"].append({"forecast_purchase_order_check": forecast_check})
             inventory_info = self._inventory_evidence(product, prod_f, prod_a)
-            if inventory_info:
+            if inventory_info:                
                 report["summary"].update({key: value for key, value in inventory_info.items() if key != "inventory_match"})
                 report["evidence"].append({"inventory_supply": inventory_info})
 
