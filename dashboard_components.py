@@ -564,22 +564,25 @@ def plot_bar_chart(df: pd.DataFrame, x: str, y: str, color: Optional[str] = None
 
 def plot_gauge(value: float, title: str, subtitle: Optional[str] = None) -> None:
     is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
-    bar_color = "#00ffff" if is_lightning else "#0dbd8b"
+    
+    # Determine the percentage for color mapping
+    pct = value * 100 if value <= 1 else value
+    if pct < 50:
+        bar_color = "#ff4b4b"  # Red
+    elif pct < 80:
+        bar_color = "#f4b400"  # Yellow
+    else:
+        bar_color = "#0dbd8b"  # Green
     
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number+delta",
-            value=value * 100 if value <= 1 else value,
+            value=pct,
             number={"suffix": "%" if value <= 1 else ""},
             delta={"reference": 100 if value <= 1 else 0, "relative": False},
             gauge={
                 "axis": {"range": [0, 100] if value <= 1 else [0, value * 1.5]},
                 "bar": {"color": bar_color},
-                "steps": [
-                    {"range": [0, 50], "color": "#962d3e"},
-                    {"range": [50, 80], "color": "#f4b400"},
-                    {"range": [80, 100], "color": "#0dbd8b"},
-                ],
             },
             title={"text": title if not subtitle else f"{title}<br><span style='font-size:0.75em;color:#c0c9d9'>{subtitle}</span>"},
         )

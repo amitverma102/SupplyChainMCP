@@ -238,7 +238,8 @@ class ReportingService:
                         f_qty = f_agg[period]
                         a_qty = a_agg[period]
                         if f_qty > 0:
-                            accuracy = min(100, (a_qty / f_qty) * 100)
+                            error = abs(f_qty - a_qty) / f_qty
+                            accuracy = max(0, (1 - error) * 100)
                             accuracies.append(accuracy)
 
             overall_accuracy = np.mean(accuracies) if accuracies else 50.0

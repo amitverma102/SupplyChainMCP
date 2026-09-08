@@ -245,7 +245,7 @@ def compute_kpis(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyChai
         "Ordered Quantity": {"value": f"{metrics['ordered_quantity']:,.0f}", "delta": "", "detail": "Total ordered units"},
         "Confirmed Quantity": {"value": f"{metrics['confirmed_quantity']:,.0f}", "delta": "", "detail": "Total confirmed units"},
         "Fill Rate": {"value": f"{metrics['fill_rate'] * 100:.2f}%", "delta": "", "detail": "Confirmed / ordered"},
-        "Forecast Accuracy": {"value": f"{metrics.get('forecast_accuracy', 0.0) * 100:.1f}%", "delta": "", "detail": "MAPE"},
+        "Forecast Accuracy": {"value": f"{max(0.0, 1 - metrics.get('forecast_accuracy', 0.0)) * 100:.1f}%", "delta": "", "detail": "Accuracy (1 - MAPE)"},
         "WMAPE": {"value": f"{metrics.get('wmape', 0.0) * 100:.1f}%", "delta": "", "detail": "Weighted MAPE"},
         "Products Short": {"value": f"{int(metrics['products_short']):,}", "delta": "", "detail": "Unique SKUs with short supply"},
         "High Risk Vendors": {"value": f"{int(metrics.get('high_risk_vendors', 0)):,}", "delta": "", "detail": "Low fill-rate vendors"},
@@ -335,6 +335,50 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                 supplier_flag = bool(supplier_causes)
                 inventory_flag = bool(inventory_causes)
 
+                tie_breaker_msg = None
+                if forecast_flag and supplier_flag:
+                    supplier_evidence = next((e["supplier_purchase_orders"] for e in report.get("evidence", []) if "supplier_purchase_orders" in e), {})
+                    inventory_evidence = next((e["inventory_supply"] for e in report.get("evidence", []) if "inventory_supply" in e), {})
+                    
+                    if supplier_evidence and inventory_evidence:
+                        supplier_monthly = supplier_evidence.get("supplier_monthly", [])
+                        if supplier_monthly:
+                            supplier_ordered_qty = sum(m.get("supplier_ordered_qty", 0) for m in supplier_monthly)
+                            supplier_received_qty = sum(m.get("supplier_fulfilled_qty", 0) for m in supplier_monthly)
+                        else:
+                            supplier_ordered_qty = supplier_evidence.get("supplier_ordered_qty", 0)
+                            supplier_received_qty = supplier_evidence.get("supplier_received_qty", 0)
+                            
+                        po_shortfall_qty = inventory_evidence.get("po_shortfall_qty", 0)
+                        
+                        extra_supply = max(0, supplier_ordered_qty - supplier_received_qty)
+                        
+                        if extra_supply >= po_shortfall_qty and po_shortfall_qty > 0:
+                            tie_breaker_msg = "Note: Both Forecast and Supplier are flagged, but the main issue is the Supplier pipeline (even if the forecast had been accurate, the supplier did not fulfill the expected quantity)."
+                        else:
+                            tie_breaker_msg = "Note: Both Forecast and Supplier are flagged, but the main issue is the Forecast (even if the supplier had fulfilled the entire order, there would still be a shortfall)."
+
+                has_issues = forecast_flag or supplier_flag or inventory_flag
+                if has_issues:
+                    causes_text = []
+                    if forecast_causes:
+                        causes_text.append(f"{_display_label(forecast_causes[0].get('cause'))} ({forecast_causes[0].get('confidence')} confidence)")
+                    if supplier_causes:
+                        causes_text.append(f"{_display_label(supplier_causes[0].get('cause'))} ({supplier_causes[0].get('confidence')} confidence)")
+                    if inventory_causes:
+                        causes_text.append(f"{_display_label(inventory_causes[0].get('cause'))} ({inventory_causes[0].get('confidence')} confidence)")
+                    
+                    if causes_text:
+                        error_msg = "Identified Issues:\n\n- " + "\n- ".join(causes_text)
+                        if tie_breaker_msg:
+                            error_msg += f"\n\n**{tie_breaker_msg}**"
+                        st.error(error_msg)
+                else:
+                    if missing_forecast or missing_supplier or missing_inventory:
+                        st.warning("Analysis incomplete due to missing data.")
+                    else:
+                        st.success("No critical supply chain issues identified.")
+
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
@@ -414,7 +458,6 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                             st.info("No supporting data found.")
                         elif forecast_causes:
                             cause = forecast_causes[0]
-                            st.error(f"Yes, likely due to {_display_label(cause.get('cause'))} ({cause.get('confidence')} confidence).")
                             evidence = cause.get("evidence", {})
                             st.write(f"**Last 3 Months Forecast:** {evidence.get('last_three_month_forecast', 0):.0f}")
                             st.write(f"**Actual PO Quantity:** {evidence.get('purchase_order_qty', 0):.0f}")
@@ -467,8 +510,6 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                         if missing_supplier:
                             st.info("No supporting data found.")
                         elif supplier_causes:
-                            cause = supplier_causes[0]
-                            st.error(f"Yes, likely due to {_display_label(cause.get('cause'))} ({cause.get('confidence')} confidence).")
                             plot_supplier_chart()
                         else:
                             st.success("No supplier pipeline issues identified as the root cause.")
@@ -479,6 +520,9 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                             monthly_sample = next((e["monthly_sample"] for e in report.get("evidence", []) if "monthly_sample" in e), [])
                             if inventory_evidence:
                                 st.write(f"**Inventory Qty Available:** {inventory_evidence.get('qty_available', 0):.0f}")
+                                if monthly_sample:
+                                    actual_po_qty = sum(item.get("Actual PO Quantity", 0) for item in monthly_sample)
+                                    st.write(f"**Actual PO Quantity:** {actual_po_qty:.0f}")
                                 st.write(f"**PO Shortfall Qty:** {inventory_evidence.get('po_shortfall_qty', 0):.0f}")
                             if monthly_sample and inventory_evidence:
                                 df_inv = pd.DataFrame(monthly_sample)
@@ -489,11 +533,14 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                                         df_inv = df_inv.rename(columns={"inventory_qty": "Inventory"})
                                     else:
                                         df_inv["Inventory"] = inventory_evidence.get("qty_available", 0)
+                                        
+                                    df_inv["Shortfall"] = (df_inv["Actual PO Quantity"] - df_inv.get("confirmed_qty", 0)).clip(lower=0)
+                                        
                                     is_lightning = st.session_state.get("theme", "dark").lower() == "lightning"
                                     template = "plotly_dark" if is_lightning else None
-                                    color_seq = ["#00ffff", "#0dbd8b"] if is_lightning else None
+                                    color_seq = ["#00ffff", "#0dbd8b", "#ff4b4b"] if is_lightning else None
                                     
-                                    fig = px.bar(df_inv, x="month", y=["Inventory", "Actual PO Quantity"], barmode="group",
+                                    fig = px.bar(df_inv, x="month", y=["Inventory", "Actual PO Quantity", "Shortfall"], barmode="group",
                                                  title="Inventory vs PO Ordered", labels={"value": "Quantity", "variable": "Metric"},
                                                  template=template, color_discrete_sequence=color_seq)
                                     
@@ -510,8 +557,6 @@ def page_dashboard(forecasts: pd.DataFrame, acks: pd.DataFrame, client: SupplyCh
                         if missing_inventory:
                             st.info("No supporting data found.")
                         elif inventory_causes:
-                            cause = inventory_causes[0]
-                            st.error(f"Yes, likely due to {_display_label(cause.get('cause'))} ({cause.get('confidence')} confidence).")
                             plot_inventory_chart()
                         else:
                             st.success("No inventory issues identified as the root cause.")
